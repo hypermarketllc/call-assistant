@@ -1,0 +1,302 @@
+import { useState, useEffect, useCallback } from 'react';
+import { GradingService } from './gradingService';
+
+export interface AudioConfig {
+  dialerApiKey: string;    // JustCall API key
+  sttApiKey: string;       // OpenAI API key for Whisper
+  webhookUrl: string;      // Your webhook endpoint URL
+}
+
+export class AudioService {
+  private mediaStream: MediaStream | null = null;
+  private audioContext: AudioContext | null = null;
+  private analyzer: AnalyserNode | null = null;
+  private mediaRecorder: MediaRecorder | null = null;
+  private audioChunks: Blob[] = [];
+  private transcriptParts: string[] = [];
+  private onTranscriptUpdate: ((transcript: string) => void) | null = null;
+  private isInbound: boolean = true;
+  private isRecording: boolean = false;
+  private justcallSession: string | null = null;
+
+  constructor(
+    private config: AudioConfig,
+    private gradingService?: GradingService,
+    private currentScript?: string,
+    private objections?: Record<string, any>
+  ) {}
+
+  private async transcribeAudio(audioBlob: Blob): Promise<string> {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.webm');
+    formData.append('model', 'whisper-1');
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.config.sttApiKey}`
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to transcribe audio');
+      }
+
+      const data = await response.json();
+      return data.text;
+    } catch (error) {
+      console.error('Transcription error:', error);
+      throw error;
+    }
+  }
+
+  private async processAudioChunk() {
+    if (this.audioChunks.length === 0) return;
+
+    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+    this.audioChunks = []; // Clear the chunks after processing
+
+    try {
+      const transcript = await this.transcribeAudio(audioBlob);
+      this.transcriptParts.push(transcript);
+      
+      if (this.onTranscriptUpdate) {
+        this.onTranscriptUpdate(this.transcriptParts.join(' '));
+      }
+    } catch (error) {
+      console.error('Failed to process audio chunk:', error);
+    }
+  }
+
+  private async initializeJustCallSession() {
+    try {
+      // Initialize JustCall session
+      const response = await fetch('https://api.justcall.io/v1/calls/init', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.config.dialerApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          webhook_url: this.config.webhookUrl,
+          recording_enabled: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to initialize JustCall session');
+      }
+
+      const data = await response.json();
+      this.justcallSession = data.session_id;
+      return data.session_id;
+    } catch (error) {
+      console.error('Failed to initialize JustCall session:', error);
+      throw error;
+    }
+  }
+
+  public setTranscriptUpdateCallback(callback: (transcript: string) => void) {
+    this.onTranscriptUpdate = callback;
+  }
+
+  public async getCallAnalysis(): Promise<{
+    transcript: string;
+    analysis: {
+      grades: any;
+      notes: string;
+    };
+  } | null> {
+    if (!this.gradingService || !this.currentScript || !this.objections) {
+      return null;
+    }
+
+    const transcript = this.transcriptParts.join(' ');
+    const analysis = await this.gradingService.analyzeCall(
+      transcript,
+      this.currentScript,
+      this.objections
+    );
+
+    return {
+      transcript,
+      analysis
+    };
+  }
+
+  public async startListening() {
+    try {
+      const permissionResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      
+      if (permissionResult.state === 'denied') {
+        throw new Error('Microphone permission is denied. Please allow microphone access in your browser settings.');
+      }
+
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      if (!this.isInbound) {
+        await this.initializeJustCallSession();
+      }
+
+      this.audioContext = new AudioContext();
+      this.analyzer = this.audioContext.createAnalyser();
+      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      source.connect(this.analyzer);
+
+      // Set up MediaRecorder for Whisper API
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+        mimeType: 'audio/webm'
+      });
+
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.audioChunks.push(event.data);
+        }
+      };
+
+      this.mediaRecorder.onstop = () => {
+        this.processAudioChunk();
+      };
+
+      // Start recording in chunks
+      this.isRecording = true;
+      this.mediaRecorder.start();
+
+      // Process chunks every 5 seconds
+      const processInterval = setInterval(() => {
+        if (this.isRecording && this.mediaRecorder) {
+          this.mediaRecorder.stop();
+          this.mediaRecorder.start();
+        } else {
+          clearInterval(processInterval);
+        }
+      }, 5000);
+
+      return true;
+    } catch (error: any) {
+      if (error.name === 'NotAllowedError') {
+        throw new Error('Microphone access was denied. Please allow microphone access to use this feature.');
+      } else {
+        console.error('Failed to start listening:', error);
+        throw error;
+      }
+    }
+  }
+
+  public async endJustCallSession() {
+    if (this.justcallSession) {
+      try {
+        await fetch(`https://api.justcall.io/v1/calls/${this.justcallSession}/end`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.config.dialerApiKey}`
+          }
+        });
+      } catch (error) {
+        console.error('Failed to end JustCall session:', error);
+      }
+      this.justcallSession = null;
+    }
+  }
+
+  public stopListening() {
+    this.isRecording = false;
+
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.mediaRecorder.stop();
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => track.stop());
+    }
+
+    if (this.audioContext) {
+      this.audioContext.close();
+    }
+
+    this.endJustCallSession();
+
+    this.mediaStream = null;
+    this.audioContext = null;
+    this.analyzer = null;
+    this.mediaRecorder = null;
+  }
+
+  public clearTranscript() {
+    this.transcriptParts = [];
+  }
+}
+
+export const useAudioService = (config: AudioConfig) => {
+  const [isListening, setIsListening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [permissionStatus, setPermissionStatus] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [transcript, setTranscript] = useState<string>('');
+
+  useEffect(() => {
+    const checkPermission = async () => {
+      try {
+        const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        setPermissionStatus(result.state as 'granted' | 'denied' | 'prompt');
+        
+        result.addEventListener('change', () => {
+          setPermissionStatus(result.state as 'granted' | 'denied' | 'prompt');
+        });
+      } catch (err) {
+        console.error('Failed to check microphone permission:', err);
+      }
+    };
+
+    checkPermission();
+  }, []);
+
+  const createAudioService = useCallback((
+    gradingService?: GradingService,
+    currentScript?: string,
+    objections?: Record<string, any>
+  ) => {
+    const service = new AudioService(config, gradingService, currentScript, objections);
+    service.setTranscriptUpdateCallback((newTranscript: string) => {
+      setTranscript(newTranscript);
+    });
+    return service;
+  }, [config]);
+
+  const startListening = async (
+    gradingService?: GradingService,
+    currentScript?: string,
+    objections?: Record<string, any>
+  ) => {
+    try {
+      setError(null);
+      const service = createAudioService(gradingService, currentScript, objections);
+      const success = await service.startListening();
+      if (success) {
+        setIsListening(true);
+      }
+      return service;
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to start listening';
+      setError(errorMessage);
+      setIsListening(false);
+      throw err;
+    }
+  };
+
+  const stopListening = (service: AudioService) => {
+    service.stopListening();
+    setIsListening(false);
+    setError(null);
+  };
+
+  return {
+    isListening,
+    error,
+    permissionStatus,
+    transcript,
+    startListening,
+    stopListening
+  };
+};
