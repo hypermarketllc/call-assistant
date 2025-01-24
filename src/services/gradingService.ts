@@ -3,30 +3,22 @@ import type { GradingConfig } from '../config/gradingConfig';
 
 export class GradingService {
   private initialized: boolean = false;
+  private grades: CallGrade[] = [];
   
   constructor(private config: GradingConfig) {}
 
   async initialize() {
-    if (this.initialized) return;
-
+    // Load saved grades from localStorage
     try {
-      // Validate required credentials
-      if (!this.config.spreadsheetId) {
-        throw new Error('Google Sheets ID is required');
+      const savedGrades = localStorage.getItem('callGrades');
+      if (savedGrades) {
+        this.grades = JSON.parse(savedGrades);
       }
-      if (!this.config.clientEmail) {
-        throw new Error('Service account email is required');
-      }
-      if (!this.config.privateKey) {
-        throw new Error('Service account private key is required');
-      }
-
-      // For now, we'll just mark as initialized since we're not using actual Google Sheets
       this.initialized = true;
-    } catch (error: any) {
-      const message = error.message || 'Failed to initialize grading service';
-      console.error('Grading service error:', message);
-      throw new Error(`Grading service initialization failed: ${message}`);
+    } catch (error) {
+      console.error('Failed to load saved grades:', error);
+      // Still mark as initialized since we can work without previous grades
+      this.initialized = true;
     }
   }
 
@@ -185,8 +177,13 @@ export class GradingService {
     }
 
     try {
-      // For now, we'll just log the grade since we're not using actual Google Sheets
-      console.log('Recording grade:', {
+      // Store grade in memory
+      this.grades.push(grade);
+      
+      // Save to localStorage
+      localStorage.setItem('callGrades', JSON.stringify(this.grades));
+      
+      console.log('Grade recorded:', {
         agentName: grade.agentName,
         timestamp: grade.timestamp,
         callType: grade.callType,
