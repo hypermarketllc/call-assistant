@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   apps: [
     {
       name: 'call-assistant-web',
@@ -7,25 +7,27 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: '3000'
-      },
-      exec_mode: 'fork',
-      instances: 1,
-      autorestart: true,
-      watch: false,
-      max_memory_restart: '1G'
+      }
     },
     {
-      name: 'call-assistant-webhook',
-      script: 'src/server/webhook.js',
+      name: 'call-assistant-proxy',
+      script: './src/server/proxy.js',
+      interpreter: 'node',
+      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
       env: {
         NODE_ENV: 'production',
         PORT: '3002'
-      },
-      exec_mode: 'fork',
-      instances: 1,
-      autorestart: true,
-      watch: false,
-      max_memory_restart: '1G'
+      }
+    },
+    {
+      name: 'call-assistant-webhook',
+      script: './src/server/webhook.js',
+      interpreter: 'node',
+      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '3003'
+      }
     }
   ]
 };
