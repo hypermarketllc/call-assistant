@@ -137,15 +137,15 @@ export function App() {
     setConfigError(null);
     console.log('Starting call with config:', apiConfig);
 
-    // Check for required API keys and only show config UI if environment variables are not set
-    if (!apiConfig.dialerApiKey && !import.meta.env.JUSTCALL_API_KEY) {
+    // Check for required API keys
+    if (!apiConfig.dialerApiKey) {
       setConfigError('JustCall API key is required');
       setCurrentPrompt('JustCall API key is required. Please configure it in the API Settings.');
       setShowApiConfig(true);
       return;
     }
 
-    if (!apiConfig.sttApiKey && !import.meta.env.OPENAI_API_KEY) {
+    if (!apiConfig.sttApiKey) {
       setConfigError('Speech-to-Text API key is required');
       setCurrentPrompt('Speech-to-Text API key is required. Please configure it in the API Settings.');
       setShowApiConfig(true);

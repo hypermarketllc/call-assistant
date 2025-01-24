@@ -1,10 +1,7 @@
-import { z } from 'zod';
-
+// Simple config interface for grading service
 export interface GradingConfig {
   // No configuration needed for local storage
 }
-
-const configSchema = z.object({});
 
 export const defaultGradingConfig: GradingConfig = {};
 

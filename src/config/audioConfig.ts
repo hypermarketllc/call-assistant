@@ -18,9 +18,9 @@ const configSchema = z.object({
 // Always prioritize environment variables, only use localStorage as fallback
 const getSavedConfig = (): AudioConfig => {
   const envConfig = {
-    dialerApiKey: import.meta.env.JUSTCALL_API_KEY,
-    sttApiKey: import.meta.env.OPENAI_API_KEY,
-    webhookUrl: import.meta.env.WEBHOOK_URL
+    dialerApiKey: import.meta.env.VITE_JUSTCALL_API_KEY || '',
+    sttApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
+    webhookUrl: import.meta.env.VITE_WEBHOOK_URL || 'https://acc-projects.com/webhook'
   };
 
   // If all environment variables are present, use them
@@ -43,12 +43,7 @@ const getSavedConfig = (): AudioConfig => {
     console.error('Failed to load config:', error);
   }
   
-  // Fall back to environment variables or empty strings
-  return {
-    dialerApiKey: envConfig.dialerApiKey || '',
-    sttApiKey: envConfig.sttApiKey || '',
-    webhookUrl: envConfig.webhookUrl || 'https://acc-projects.com/webhook'
-  };
+  return envConfig;
 };
 
 export const defaultAudioConfig: AudioConfig = getSavedConfig();
@@ -70,9 +65,9 @@ export const saveAudioConfig = (config: AudioConfig): boolean => {
     
     // Only save values that aren't in environment variables
     const envConfig = {
-      dialerApiKey: import.meta.env.JUSTCALL_API_KEY,
-      sttApiKey: import.meta.env.OPENAI_API_KEY,
-      webhookUrl: import.meta.env.WEBHOOK_URL
+      dialerApiKey: import.meta.env.VITE_JUSTCALL_API_KEY,
+      sttApiKey: import.meta.env.VITE_OPENAI_API_KEY,
+      webhookUrl: import.meta.env.VITE_WEBHOOK_URL
     };
 
     const storageConfig = {

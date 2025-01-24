@@ -8,7 +8,6 @@ export class GradingService {
   constructor(private config: GradingConfig) {}
 
   async initialize() {
-    // Load saved grades from localStorage
     try {
       const savedGrades = localStorage.getItem('callGrades');
       if (savedGrades) {

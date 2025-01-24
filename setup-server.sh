@@ -3,26 +3,22 @@
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install Node.js
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
+# Install Docker and Docker Compose
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
 
 # Install Nginx
-sudo apt install -y nginx
-
-# Install Certbot for SSL
-sudo apt install -y certbot python3-certbot-nginx
-
-# Install PM2
-sudo npm install -g pm2
-
-# Create SSL certificate (replace with your domain)
-sudo certbot --nginx -d your-domain.com
+sudo apt install -y nginx certbot python3-certbot-nginx
 
 # Copy Nginx configuration
 sudo cp nginx.conf /etc/nginx/sites-available/call-assistant
 sudo ln -s /etc/nginx/sites-available/call-assistant /etc/nginx/sites-enabled/
 sudo rm /etc/nginx/sites-enabled/default
+
+# Create SSL certificate (replace with your domain)
+sudo certbot --nginx -d your-domain.com
 
 # Test Nginx configuration
 sudo nginx -t
@@ -30,10 +26,5 @@ sudo nginx -t
 # Restart Nginx
 sudo systemctl restart nginx
 
-# Install dependencies
-npm install
-
-# Start application with PM2
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
+# Start the application
+docker-compose up -d
