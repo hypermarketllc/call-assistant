@@ -2,14 +2,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Mic, MicOff, FileText, Minimize2, Maximize2, AlertCircle, CheckCircle2, Clock, Search, ChevronDown, ChevronUp, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
 import { checklistItems, defaultScripts } from './config/callConfig';
 import { useAudioService } from './services/audioService';
-import { defaultAudioConfig } from './config/audioConfig';
+import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey } from './config/audioConfig';
 import { GradingService } from './services/gradingService';
 import { defaultGradingConfig } from './config/gradingConfig';
 import { GradeCallModal } from './components/GradeCallModal';
 import { ScriptEditor } from './components/ScriptEditor';
 
 export function App() {
-  // [Previous state declarations remain the same]
+  // Initialize refs first
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scriptRef = useRef<HTMLDivElement>(null);
+
+  // State declarations
   const [scripts, setScripts] = useState(defaultScripts);
   const [selectedScriptId, setSelectedScriptId] = useState(defaultScripts[0].id);
   const [currentPrompt, setCurrentPrompt] = useState('');
@@ -39,6 +43,7 @@ export function App() {
   const [agentName, setAgentName] = useState('Agent');
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
 
   const currentScript = scripts.find(s => s.id === selectedScriptId) || scripts[0];
   const [objections, setObjections] = useState(currentScript.objections);
@@ -50,9 +55,6 @@ export function App() {
   });
 
   const { isListening, error, permissionStatus, startListening, stopListening } = useAudioService(apiConfig);
-
-  const scriptRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const [activeObjection, setActiveObjection] = useState<{
     category: string;
@@ -67,6 +69,11 @@ export function App() {
       setObjections(script.objections);
     }
   }, [selectedScriptId, scripts]);
+
+  useEffect(() => {
+    // Log current configuration on mount
+    console.log('Current API Configuration:', apiConfig);
+  }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!isResizing) {
@@ -126,8 +133,25 @@ export function App() {
     setDragStart({ x: e.clientX, y: e.clientY });
   };
 
-  // [Previous handlers remain the same]
   const handleStartCall = async () => {
+    setConfigError(null);
+    console.log('Starting call with config:', apiConfig);
+
+    // Check for required API keys
+    if (!apiConfig.dialerApiKey) {
+      setConfigError('JustCall API key is required');
+      setCurrentPrompt('JustCall API key is required. Please configure it in the API Settings.');
+      setShowApiConfig(true);
+      return;
+    }
+
+    if (!apiConfig.sttApiKey) {
+      setConfigError('Speech-to-Text API key is required');
+      setCurrentPrompt('Speech-to-Text API key is required. Please configure it in the API Settings.');
+      setShowApiConfig(true);
+      return;
+    }
+
     if (permissionStatus === 'denied') {
       setCurrentPrompt('Microphone access is required. Please enable it in your browser settings.');
       return;
@@ -148,15 +172,17 @@ export function App() {
       const gradingService = new GradingService(defaultGradingConfig);
       await gradingService.initialize();
       
+      console.log('Starting audio service with config:', apiConfig);
       const service = await startListening(
         gradingService,
         currentScript.content,
         currentScript.objections
       );
       setCurrentAudioService(service);
-      setCurrentPrompt('');
-    } catch (err) {
-      setCurrentPrompt('Failed to start call. Please check microphone permissions.');
+      setCurrentPrompt('Call started successfully');
+    } catch (err: any) {
+      console.error('Failed to start call:', err);
+      setCurrentPrompt(err.message || 'Failed to start call. Please check your configuration.');
       setIsCallActive(false);
     }
   };
@@ -288,6 +314,29 @@ export function App() {
     }
   };
 
+  const handleSaveConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    console.log('Saving config:', {
+      ...apiConfig,
+      dialerApiKey: '[REDACTED]',
+      sttApiKey: '[REDACTED]'
+    });
+    
+    // Validate JustCall API key format
+    if (!validateJustCallApiKey(apiConfig.dialerApiKey)) {
+      setConfigError('Invalid JustCall API key format. Expected format: key:secret');
+      return;
+    }
+
+    if (saveAudioConfig(apiConfig)) {
+      setShowApiConfig(false);
+      setCurrentPrompt('API configuration saved successfully');
+      setConfigError(null);
+    } else {
+      setConfigError('Failed to save configuration. Please check the values and try again.');
+    }
+  };
+
   useEffect(() => {
     const handleGlobalMouseUp = () => {
       if (isDragging || isResizing) {
@@ -308,7 +357,7 @@ export function App() {
       window.removeEventListener('mouseup', handleGlobalMouseUp);
       window.removeEventListener('mousemove', handleGlobalMouseMove);
     };
-  }, [isDragging, isResizing, handleMouseMove, handleMouseUp]);
+  }, [isDragging, isResizing]);
 
   return (
     <>
@@ -327,7 +376,7 @@ export function App() {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        {/* Resize handles - always visible but only active when not minimized */}
+        {/* Resize handles */}
         <div
           className={`absolute top-0 left-0 w-1 h-full cursor-ew-resize hover:bg-blue-500/20 ${isMinimized ? 'pointer-events-none' : ''}`}
           onMouseDown={(e) => !isMinimized && handleResizeStart(e, 'left')}
@@ -482,9 +531,7 @@ export function App() {
                         <p
                           key={index}
                           className={`p-2 rounded ${
-                            currentScriptIndex === index
-                              ? 'bg-blue-100 border-l-4 border-blue-600'
-                              : ''
+                            currentScriptIndex === index ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                           }`}
                         >
                           {paragraph}
@@ -496,19 +543,19 @@ export function App() {
               )}
 
               {activeTab === 'checklist' && (
-                <div className="space-y-2">
-                  {activeChecklist.map((item) => (
+                <div className="space-y-4">
+                  {activeChecklist.map(item => (
                     <div
                       key={item.id}
-                      className="flex items-center p-2 hover:bg-gray-50 rounded"
-                      onClick={() => handleChecklistToggle(item.id)}
+                      className="flex items-center space-x-3 p-2 hover:bg-gray-50 rounded"
                     >
-                      <div className={`w-5 h-5 rounded border mr-3 flex items-center justify-center cursor-pointer
-                        ${item.completed ? 'bg-blue-600 border-blue-600' : 'border-gray-300'}`}
-                      >
-                        {item.completed && <CheckCircle2 className="w-4 h-4 text-white" />}
-                      </div>
-                      <span className={`flex-1 ${item.completed ? 'line-through text-gray-500' : 'text-gray-700'}`}>
+                      <input
+                        type="checkbox"
+                        checked={item.completed}
+                        onChange={() => handleChecklistToggle(item.id)}
+                        className="h-5 w-5 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      />
+                      <span className={item.completed ? 'line-through text-gray-500' : ''}>
                         {item.text}
                       </span>
                     </div>
@@ -518,21 +565,23 @@ export function App() {
 
               {activeTab === 'objections' && (
                 <div className="space-y-4">
-                  {Object.entries(objections).map(([category, objectionList]) => (
-                    <div key={category} className="border rounded-lg overflow-hidden">
-                      <div className="bg-gray-50 p-3 font-medium text-gray-700 capitalize">
-                        {category}
-                      </div>
-                      <div className="divide-y">
-                        {Object.entries(objectionList).map(([objection, responses]) => (
-                          <div key={objection} className="p-3 hover:bg-gray-50">
-                            <h4 className="font-medium text-gray-800 mb-2">"{objection}"</h4>
-                            <ul className="list-disc list-inside space-y-1 text-gray-600 text-sm">
-                              {(responses as string[]).map((response, index) => (
-                                <li key={index}>{response}</li>
-                              ))}
-                            </ul>
-                          </div>
+                  {Object.entries(objections).map(([category, items]) => (
+                    <div key={category}>
+                      <h3 className="font-medium text-gray-900 mb-2">{category}</h3>
+                      <div className="space-y-2">
+                        {items.map((objection, index) => (
+                          <button
+                            key={index}
+                            onClick={() => setActiveObjection({
+                              category,
+                              objection: objection.objection,
+                              responses: objection.responses,
+                              returnIndex: currentScriptIndex
+                            })}
+                            className="w-full text-left p-3 rounded bg-gray-50 hover:bg-gray-100"
+                          >
+                            {objection.objection}
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -540,176 +589,146 @@ export function App() {
                 </div>
               )}
             </div>
-
-            {currentPrompt && (
-              <div className="p-4 bg-yellow-50 border-t">
-                <div className="flex items-start">
-                  <AlertCircle className="w-5 h-5 text-yellow-500 mr-2 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-gray-700">{currentPrompt}</p>
-                </div>
-              </div>
-            )}
-
-            {error && (
-              <div className="p-4 bg-red-50 border-t">
-                <div className="flex items-start">
-                  <AlertCircle className="w-5 h-5 text-red-500 mr-2 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-red-700">{error}</p>
-                </div>
-              </div>
-            )}
           </>
         )}
+      </div>
 
-        {showSettings && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg w-[800px] max-h-[80vh] overflow-y-auto">
-              <div className="p-4 border-b flex justify-between items-center">
-                <h2 className="text-xl font-semibold">Configuration Settings</h2>
-                <div className="flex items-center space-x-2">
-                  <button
-                    className="px-3 py-1 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200"
-                    onClick={() => setShowApiConfig(true)}
-                  >
-                    API Keys
-                  </button>
-                  <X 
-                    className="w-6 h-6 text-gray-500 cursor-pointer hover:text-gray-700"
-                    onClick={() => setShowSettings(false)}
-                  />
-                </div>
-              </div>
-              <div className="p-6 space-y-6">
-                <div>
-                  <h3 className="text-lg font-medium mb-4">Script Management</h3>
-                  <div className="space-y-4">
-                    {scripts.map(script => (
-                      <div key={script.id} className="border rounded-lg overflow-hidden">
-                        <div className="bg-gray-50 p-3 flex justify-between items-center">
-                          <h4 className="font-medium">{script.name}</h4>
-                          <button
-                            className="px-3 py-1 text-sm bg-blue-100 text-blue-600 rounded hover:bg-blue-200"
-                            onClick={() => setEditingScriptId(script.id)}
-                          >
-                            Edit Script
-                          </button>
-                        </div>
-                        {editingScriptId === script.id && (
-                          <div className="p-4">
-                            <ScriptEditor
-                              script={script}
-                              onSave={(updatedScript) => handleScriptSave(script.id, updatedScript)}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="text-lg font-medium mb-2">Checklist Items</h3>
-                  <p className="text-sm text-gray-600 mb-2">Enter one item per line</p>
-                  <textarea
-                    className="w-full h-40 p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="Enter checklist items (one per line)..."
-                    defaultValue={checklist.map(item => item.text).join('\n')}
-                    onChange={handleChecklistUpload}
-                  />
-                </div>
-              </div>
-              <div className="p-4 border-t bg-gray-50 flex justify-end">
-                <button
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                  onClick={() => setShowSettings(false)}
-                >
-                  Save Changes
-                </button>
-              </div>
+      {showSettings && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-4 border-b">
+              <h2 className="text-lg font-semibold">Settings</h2>
+              <button onClick={() => setShowSettings(false)}>
+                <X className="w-5 h-5 text-gray-500 hover:text-gray-700" />
+              </button>
             </div>
-          </div>
-        )}
-
-        {showApiConfig && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg w-[500px]">
-              <div className="p-4 border-b flex justify-between items-center">
-                <h2 className="text-xl font-semibold">API Configuration</h2>
-                <X 
-                  className="w-6 h-6 text-gray-500 cursor-pointer hover:text-gray-700"
-                  onClick={() => setShowApiConfig(false)}
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Agent Name
+                </label>
+                <input
+                  type="text"
+                  className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  value={agentName}
+                  onChange={(e) => setAgentName(e.target.value)}
+                  placeholder="Enter agent name"
                 />
               </div>
-              <form 
-                className="p-6 space-y-4"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setShowApiConfig(false);
-                }}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Checklist Items
+                </label>
+                <textarea
+                  className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  rows={5}
+                  value={checklist.map(item => item.text).join('\n')}
+                  onChange={handleChecklistUpload}
+                  placeholder="Enter checklist items (one per line)"
+                />
+              </div>
+              <button
+                onClick={() => setShowApiConfig(true)}
+                className="w-full p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Dialer API Key
-                  </label>
-                  <input
-                    type="password"
-                    className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    value={apiConfig.dialerApiKey}
-                    onChange={(e) => setApiConfig(prev => ({ ...prev, dialerApiKey: e.target.value }))}
-                    placeholder="Enter your dialer API key"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Speech-to-Text API Key
-                  </label>
-                  <input
-                    type="password"
-                    className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    value={apiConfig.sttApiKey}
-                    onChange={(e) => setApiConfig(prev => ({ ...prev, sttApiKey: e.target.value }))}
-                    placeholder="Enter your Speech-to-Text API key"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    WebSocket URL
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    value={apiConfig.websocketUrl}
-                    onChange={(e) => setApiConfig(prev => ({ ...prev, websocketUrl: e.target.value }))}
-                    placeholder="Enter your WebSocket server URL"
-                  />
-                </div>
-                <div className="flex justify-end space-x-3 mt-6">
-                  <button
-                    type="button"
-                    className="px-4 py-2 text-gray-600 hover:text-gray-800"
-                    onClick={() => setShowApiConfig(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                  >
-                    Save Configuration
-                  </button>
-                </div>
-              </form>
+                Configure API Settings
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
+      {showApiConfig && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center p-4 border-b">
+              <h2 className="text-lg font-semibold">API Configuration</h2>
+              <button onClick={() => setShowApiConfig(false)}>
+                <X className="w-5 h-5 text-gray-500 hover:text-gray-700" />
+              </button>
+            </div>
+            <form 
+              className="p-6 space-y-4"
+              onSubmit={handleSaveConfig}
+            >
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Dialer API Key
+                </label>
+                <input
+                  type="password"
+                  className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  value={apiConfig.dialerApiKey}
+                  onChange={(e) => setApiConfig(prev => ({ ...prev, dialerApiKey: e.target.value }))}
+                  placeholder="Enter your dialer API key"
+                />
+                {configError && configError.includes('JustCall API key') && (
+                  <p className="mt-1 text-sm text-red-600">{configError}</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Speech-to-Text API Key
+                </label>
+                <input
+                  type="password"
+                  className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  value={apiConfig.sttApiKey}
+                  onChange={(e) => setApiConfig(prev => ({ ...prev, sttApiKey: e.target.value }))}
+                  placeholder="Enter your Speech-to-Text API key"
+                />
+                {configError && configError.includes('Speech-to-Text API key') && (
+                  <p className="mt-1 text-sm text-red-600">{configError}</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Webhook URL
+                </label>
+                <input
+                  type="text"
+                  className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  value={apiConfig.webhookUrl}
+                  onChange={(e) => setApiConfig(prev => ({ ...prev, webhookUrl: e.target.value }))}
+                  placeholder="Enter your webhook URL"
+                />
+              </div>
+              <div className="flex justify-end space-x-3 mt-6">
+                <button
+                  type="button"
+                  className="px-4 py-2 text-gray-600 hover:text-gray-800"
+                  onClick={() => setShowApiConfig(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  Save Configuration
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showGradeModal && (
         <GradeCallModal
-          isOpen={showGradeModal}
           onClose={() => setShowGradeModal(false)}
           onSubmit={handleGradeSubmit}
-          duration={callMetrics.duration }
+          transcript={transcript}
+          callMetrics={callMetrics}
         />
-      </div>
+      )}
+
+      {editingScriptId && (
+        <ScriptEditor
+          script={scripts.find(s => s.id === editingScriptId)!}
+          onSave={handleScriptSave}
+          onClose={() => setEditingScriptId(null)}
+        />
+      )}
     </>
   );
 }

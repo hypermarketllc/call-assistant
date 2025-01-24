@@ -1,28 +1,23 @@
-import { GoogleSpreadsheet } from 'google-spreadsheet';
 import type { CallGrade, GradeAnalysis } from '../types/grading';
 import type { GradingConfig } from '../config/gradingConfig';
 
 export class GradingService {
-  private doc: GoogleSpreadsheet;
   private initialized: boolean = false;
+  private grades: CallGrade[] = [];
   
-  constructor(private config: GradingConfig) {
-    this.doc = new GoogleSpreadsheet(config.spreadsheetId);
-  }
+  constructor(private config: GradingConfig) {}
 
   async initialize() {
-    if (this.initialized) return;
-
     try {
-      await this.doc.useServiceAccountAuth({
-        client_email: this.config.clientEmail,
-        private_key: this.config.privateKey,
-      });
-      await this.doc.loadInfo();
+      const savedGrades = localStorage.getItem('callGrades');
+      if (savedGrades) {
+        this.grades = JSON.parse(savedGrades);
+      }
       this.initialized = true;
     } catch (error) {
-      console.error('Failed to initialize grading service:', error);
-      throw new Error('Failed to initialize grading service. Please check your credentials.');
+      console.error('Failed to load saved grades:', error);
+      // Still mark as initialized since we can work without previous grades
+      this.initialized = true;
     }
   }
 
@@ -113,11 +108,13 @@ export class GradingService {
 
   private evaluateObjectionHandling(transcript: string, objections: Record<string, any>): number {
     let score = 7;
+    let objectionCount = 0;
     
-    Object.entries(objections).forEach(([category, objectionList]: [string, any]) => {
-      Object.entries(objectionList).forEach(([objection, responses]: [string, string[]]) => {
+    Object.entries(objections).forEach(([category, objectionList]) => {
+      Object.entries(objectionList).forEach(([objection, responses]) => {
         if (transcript.toLowerCase().includes(objection.toLowerCase())) {
-          responses.forEach(response => {
+          objectionCount++;
+          (responses as string[]).forEach(response => {
             if (transcript.toLowerCase().includes(response.toLowerCase())) {
               score += 1;
             }
@@ -126,6 +123,7 @@ export class GradingService {
       });
     });
     
+    if (objectionCount === 0) return 7; // Default score if no objections were handled
     return Math.min(Math.max(Math.round(score), 1), 10);
   }
 
@@ -178,40 +176,25 @@ export class GradingService {
     }
 
     try {
-      const sheet = this.doc.sheetsByIndex[0] || await this.doc.addSheet({
-        headerValues: [
-          'Agent Name',
-          'Timestamp',
-          'Call Type',
-          'Duration',
-          'Tone',
-          'On Script',
-          'Presentation',
-          'Objection Handling',
-          'Speaking',
-          'Overall Rating',
-          'Notes',
-          'Transcription'
-        ]
+      // Store grade in memory
+      this.grades.push(grade);
+      
+      // Save to localStorage
+      localStorage.setItem('callGrades', JSON.stringify(this.grades));
+      
+      console.log('Grade recorded:', {
+        agentName: grade.agentName,
+        timestamp: grade.timestamp,
+        callType: grade.callType,
+        duration: grade.duration,
+        grades: grade.grades,
+        notes: grade.notes
       });
-
-      await sheet.addRow({
-        'Agent Name': grade.agentName,
-        'Timestamp': grade.timestamp,
-        'Call Type': grade.callType,
-        'Duration': grade.duration,
-        'Tone': grade.grades.tone,
-        'On Script': grade.grades.onScript,
-        'Presentation': grade.grades.presentation,
-        'Objection Handling': grade.grades.objectionHandling,
-        'Speaking': grade.grades.speaking,
-        'Overall Rating': grade.grades.overall,
-        'Notes': grade.notes,
-        'Transcription': grade.transcription
-      });
+      
+      return true;
     } catch (error) {
       console.error('Failed to record grade:', error);
-      throw new Error('Failed to record grade in spreadsheet');
+      throw new Error('Failed to record grade');
     }
   }
 }

@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"  # Frontend
+      - "3002:3002"  # API/Proxy
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_PORT=3002
+    volumes:
+      - .env:/app/.env
+    restart: unless-stopped

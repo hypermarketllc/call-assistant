@@ -1,22 +1,31 @@
 module.exports = {
   apps: [
     {
-      name: "webhook-1",
-      script: "src/server/webhook.js",
-      watch: false,
-      instances: 4,
-      exec_mode: "cluster",
-      max_memory_restart: "500M",
+      name: 'call-assistant-web',
+      script: 'npm',
+      args: 'run preview',
       env: {
-        NODE_ENV: "production"
-      }
+        NODE_ENV: 'production',
+        PORT: '3000'
+      },
+      exec_mode: 'fork',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G'
     },
     {
-      name: "call-assistant-web",
-      script: "npm",
-      args: "run dev",
+      name: 'call-assistant-webhook',
+      script: 'src/server/webhook.js',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '3002'
+      },
+      exec_mode: 'fork',
+      instances: 1,
+      autorestart: true,
       watch: false,
-      max_memory_restart: "300M"
+      max_memory_restart: '1G'
     }
   ]
 };

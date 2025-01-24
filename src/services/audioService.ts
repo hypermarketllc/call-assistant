@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { GradingService } from './gradingService';
-
-export interface AudioConfig {
-  dialerApiKey: string;    // JustCall API key
-  sttApiKey: string;       // OpenAI API key for Whisper
-  webhookUrl: string;      // Your webhook endpoint URL
-}
+import type { GradingService } from './gradingService';
+import type { AudioConfig } from '../config/audioConfig';
 
 export class AudioService {
   private mediaStream: MediaStream | null = null;
@@ -26,18 +21,53 @@ export class AudioService {
     private objections?: Record<string, any>
   ) {}
 
-  private async transcribeAudio(audioBlob: Blob): Promise<string> {
-    const formData = new FormData();
-    formData.append('file', audioBlob, 'audio.webm');
-    formData.append('model', 'whisper-1');
-
+  private async initializeJustCallSession(): Promise<string> {
     try {
-      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      console.log('Initializing JustCall session...');
+      const response = await fetch('/.netlify/functions/justcall-init', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.config.sttApiKey}`
+          'Content-Type': 'application/json'
         },
-        body: formData
+        body: JSON.stringify({
+          recording_enabled: true
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to initialize JustCall session');
+      }
+
+      const data = await response.json();
+      this.justcallSession = data.session_id;
+      console.log('JustCall session initialized:', this.justcallSession);
+      return data.session_id;
+    } catch (error: any) {
+      console.error('JustCall initialization error:', error);
+      throw new Error(`Failed to initialize JustCall session: ${error.message}`);
+    }
+  }
+
+  private async processAudioChunk(): Promise<void> {
+    if (this.audioChunks.length === 0) return;
+
+    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+    this.audioChunks = [];
+
+    try {
+      // Convert blob to base64
+      const buffer = await audioBlob.arrayBuffer();
+      const base64Audio = Buffer.from(buffer).toString('base64');
+
+      const response = await fetch('/.netlify/functions/transcribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          audio: base64Audio
+        })
       });
 
       if (!response.ok) {
@@ -45,61 +75,119 @@ export class AudioService {
       }
 
       const data = await response.json();
-      return data.text;
-    } catch (error) {
-      console.error('Transcription error:', error);
-      throw error;
-    }
-  }
-
-  private async processAudioChunk() {
-    if (this.audioChunks.length === 0) return;
-
-    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
-    this.audioChunks = []; // Clear the chunks after processing
-
-    try {
-      const transcript = await this.transcribeAudio(audioBlob);
-      this.transcriptParts.push(transcript);
-      
-      if (this.onTranscriptUpdate) {
-        this.onTranscriptUpdate(this.transcriptParts.join(' '));
+      if (data.text?.trim()) {
+        this.transcriptParts.push(data.text);
+        
+        if (this.onTranscriptUpdate) {
+          this.onTranscriptUpdate(this.transcriptParts.join(' '));
+        }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to process audio chunk:', error);
     }
   }
 
-  private async initializeJustCallSession() {
+  public async startListening(): Promise<boolean> {
     try {
-      // Initialize JustCall session
-      const response = await fetch('https://api.justcall.io/v1/calls/init', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.config.dialerApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          webhook_url: this.config.webhookUrl,
-          recording_enabled: true
-        })
-      });
+      console.log('Starting audio service...');
 
-      if (!response.ok) {
-        throw new Error('Failed to initialize JustCall session');
+      // Initialize JustCall session first
+      await this.initializeJustCallSession();
+
+      // Check microphone permissions
+      const permissionResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      if (permissionResult.state === 'denied') {
+        throw new Error('Microphone permission is denied');
       }
 
-      const data = await response.json();
-      this.justcallSession = data.session_id;
-      return data.session_id;
-    } catch (error) {
-      console.error('Failed to initialize JustCall session:', error);
+      // Get microphone access
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('Microphone access granted');
+
+      // Set up audio processing
+      this.audioContext = new AudioContext();
+      this.analyzer = this.audioContext.createAnalyser();
+      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+      source.connect(this.analyzer);
+
+      // Configure MediaRecorder
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+        mimeType: 'audio/webm'
+      });
+
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.audioChunks.push(event.data);
+        }
+      };
+
+      this.mediaRecorder.onstop = () => {
+        void this.processAudioChunk();
+      };
+
+      // Start recording
+      this.isRecording = true;
+      this.mediaRecorder.start();
+      console.log('Recording started');
+
+      // Process chunks every 5 seconds
+      const processInterval = setInterval(() => {
+        if (this.isRecording && this.mediaRecorder) {
+          this.mediaRecorder.stop();
+          this.mediaRecorder.start();
+        } else {
+          clearInterval(processInterval);
+        }
+      }, 5000);
+
+      return true;
+    } catch (error: any) {
+      console.error('Failed to start listening:', error);
       throw error;
     }
   }
 
-  public setTranscriptUpdateCallback(callback: (transcript: string) => void) {
+  public async stopListening(): Promise<void> {
+    console.log('Stopping audio service...');
+    this.isRecording = false;
+
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.mediaRecorder.stop();
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => track.stop());
+    }
+
+    if (this.audioContext) {
+      await this.audioContext.close();
+    }
+
+    if (this.justcallSession) {
+      try {
+        await fetch(`/.netlify/functions/justcall-end/${this.justcallSession}`, {
+          method: 'POST'
+        });
+        console.log('JustCall session ended');
+      } catch (error) {
+        console.error('Failed to end JustCall session:', error);
+      }
+    }
+
+    this.mediaStream = null;
+    this.audioContext = null;
+    this.analyzer = null;
+    this.mediaRecorder = null;
+    this.justcallSession = null;
+    console.log('Audio service stopped');
+  }
+
+  public setTranscriptUpdateCallback(callback: (transcript: string) => void): void {
     this.onTranscriptUpdate = callback;
+  }
+
+  public clearTranscript(): void {
+    this.transcriptParts = [];
   }
 
   public async getCallAnalysis(): Promise<{
@@ -125,108 +213,6 @@ export class AudioService {
       analysis
     };
   }
-
-  public async startListening() {
-    try {
-      const permissionResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      
-      if (permissionResult.state === 'denied') {
-        throw new Error('Microphone permission is denied. Please allow microphone access in your browser settings.');
-      }
-
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      if (!this.isInbound) {
-        await this.initializeJustCallSession();
-      }
-
-      this.audioContext = new AudioContext();
-      this.analyzer = this.audioContext.createAnalyser();
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      source.connect(this.analyzer);
-
-      // Set up MediaRecorder for Whisper API
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
-        mimeType: 'audio/webm'
-      });
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.onstop = () => {
-        this.processAudioChunk();
-      };
-
-      // Start recording in chunks
-      this.isRecording = true;
-      this.mediaRecorder.start();
-
-      // Process chunks every 5 seconds
-      const processInterval = setInterval(() => {
-        if (this.isRecording && this.mediaRecorder) {
-          this.mediaRecorder.stop();
-          this.mediaRecorder.start();
-        } else {
-          clearInterval(processInterval);
-        }
-      }, 5000);
-
-      return true;
-    } catch (error: any) {
-      if (error.name === 'NotAllowedError') {
-        throw new Error('Microphone access was denied. Please allow microphone access to use this feature.');
-      } else {
-        console.error('Failed to start listening:', error);
-        throw error;
-      }
-    }
-  }
-
-  public async endJustCallSession() {
-    if (this.justcallSession) {
-      try {
-        await fetch(`https://api.justcall.io/v1/calls/${this.justcallSession}/end`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.config.dialerApiKey}`
-          }
-        });
-      } catch (error) {
-        console.error('Failed to end JustCall session:', error);
-      }
-      this.justcallSession = null;
-    }
-  }
-
-  public stopListening() {
-    this.isRecording = false;
-
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      this.mediaRecorder.stop();
-    }
-
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-    }
-
-    if (this.audioContext) {
-      this.audioContext.close();
-    }
-
-    this.endJustCallSession();
-
-    this.mediaStream = null;
-    this.audioContext = null;
-    this.analyzer = null;
-    this.mediaRecorder = null;
-  }
-
-  public clearTranscript() {
-    this.transcriptParts = [];
-  }
 }
 
 export const useAudioService = (config: AudioConfig) => {
@@ -249,7 +235,7 @@ export const useAudioService = (config: AudioConfig) => {
       }
     };
 
-    checkPermission();
+    void checkPermission();
   }, []);
 
   const createAudioService = useCallback((
@@ -286,7 +272,7 @@ export const useAudioService = (config: AudioConfig) => {
   };
 
   const stopListening = (service: AudioService) => {
-    service.stopListening();
+    void service.stopListening();
     setIsListening(false);
     setError(null);
   };
