@@ -1,8 +1,8 @@
 import type { JustCallEvent, JustCallEventType } from '../types/justcall';
+import crypto from 'crypto';
 
 export class WebhookHandler {
   private verifySignature(signature: string, payload: string, secret: string): boolean {
-    const crypto = require('crypto');
     const hmac = crypto.createHmac('sha256', secret);
     const calculatedSignature = hmac.update(payload).digest('hex');
     return signature === calculatedSignature;

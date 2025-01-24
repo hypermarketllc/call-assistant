@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { GradingService } from './gradingService';
-
-export interface AudioConfig {
-  dialerApiKey: string;    // JustCall API key
-  sttApiKey: string;       // OpenAI API key for Whisper
-  webhookUrl: string;      // Your webhook endpoint URL
-}
+import type { AudioConfig } from '../config/audioConfig';
 
 export class AudioService {
   private mediaStream: MediaStream | null = null;
@@ -72,11 +67,15 @@ export class AudioService {
 
   private async initializeJustCallSession() {
     try {
-      // Initialize JustCall session
+      const [key, secret] = this.config.dialerApiKey.split(':');
+      if (!key || !secret) {
+        throw new Error('Invalid JustCall API key format. Expected format: key:secret');
+      }
+
       const response = await fetch('https://api.justcall.io/v1/calls/init', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.config.dialerApiKey}`,
+          'Authorization': `Basic ${btoa(`${key}:${secret}`)}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -86,13 +85,14 @@ export class AudioService {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to initialize JustCall session');
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to initialize JustCall session');
       }
 
       const data = await response.json();
       this.justcallSession = data.session_id;
       return data.session_id;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to initialize JustCall session:', error);
       throw error;
     }

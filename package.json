@@ -18,9 +18,10 @@
     "file-saver": "^2.0.5",
     "google-spreadsheet": "^4.1.1",
     "lucide-react": "^0.344.0",
-    "ngrok": "^5.0.0",
+    "ngrok": "^4.3.3",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/body-parser": "^1.19.5",

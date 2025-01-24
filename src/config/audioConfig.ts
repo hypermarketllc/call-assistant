@@ -1,40 +1,62 @@
+import { z } from 'zod';
+
 export interface AudioConfig {
   dialerApiKey: string;    // JustCall API key
   sttApiKey: string;       // OpenAI Whisper API key
   webhookUrl: string;      // Webhook endpoint URL
 }
 
+// Validate JustCall API key format (key:secret)
+const justCallApiKeyRegex = /^[a-f0-9]+:[a-f0-9]+$/i;
+
+const configSchema = z.object({
+  dialerApiKey: z.string().min(1, 'JustCall API key is required'),
+  sttApiKey: z.string().min(1, 'Speech-to-Text API key is required'),
+  webhookUrl: z.string().url().default('https://acc-projects.com/webhook')
+});
+
 // Load saved config from localStorage if it exists
 const getSavedConfig = (): AudioConfig => {
-  const saved = localStorage.getItem('callAssistantConfig');
-  if (saved) {
-    return JSON.parse(saved);
+  try {
+    const saved = localStorage.getItem('callAssistantConfig');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return configSchema.parse({
+        dialerApiKey: parsed.dialerApiKey || '',
+        sttApiKey: parsed.sttApiKey || '',
+        webhookUrl: parsed.webhookUrl || 'https://acc-projects.com/webhook'
+      });
+    }
+  } catch (error) {
+    console.error('Failed to load config:', error);
   }
+  
   return {
     dialerApiKey: '',
     sttApiKey: '',
-    webhookUrl: '',
+    webhookUrl: 'https://acc-projects.com/webhook'
   };
 };
 
 export const defaultAudioConfig: AudioConfig = getSavedConfig();
 
-export interface JustCallEvent {
-  event_type: string;
-  call_id: string;
-  session_id: string;
-  agent_number: string;
-  customer_number: string;
-  direction: 'inbound' | 'outbound';
-  status: 'ringing' | 'answered' | 'completed' | 'missed';
-  duration: number;
-  recording_url?: string;
-  voicemail_url?: string;
-  queue_name?: string;
-  ai_report?: {
-    summary: string;
-    sentiment: string;
-    action_items: string[];
-    topics: string[];
-  };
-}
+export const saveAudioConfig = (config: AudioConfig): boolean => {
+  try {
+    const cleanedConfig = {
+      ...config,
+      dialerApiKey: config.dialerApiKey.trim().replace(/\s+/g, '')
+    };
+
+    configSchema.parse(cleanedConfig);
+    localStorage.setItem('callAssistantConfig', JSON.stringify(cleanedConfig));
+    return true;
+  } catch (error) {
+    console.error('Failed to save config:', error);
+    return false;
+  }
+};
+
+export const validateJustCallApiKey = (key: string): boolean => {
+  const cleaned = key.trim().replace(/\s+/g, '');
+  return justCallApiKeyRegex.test(cleaned);
+};

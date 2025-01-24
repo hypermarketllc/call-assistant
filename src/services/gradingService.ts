@@ -1,28 +1,32 @@
-import { GoogleSpreadsheet } from 'google-spreadsheet';
 import type { CallGrade, GradeAnalysis } from '../types/grading';
 import type { GradingConfig } from '../config/gradingConfig';
 
 export class GradingService {
-  private doc: GoogleSpreadsheet;
   private initialized: boolean = false;
   
-  constructor(private config: GradingConfig) {
-    this.doc = new GoogleSpreadsheet(config.spreadsheetId);
-  }
+  constructor(private config: GradingConfig) {}
 
   async initialize() {
     if (this.initialized) return;
 
     try {
-      await this.doc.useServiceAccountAuth({
-        client_email: this.config.clientEmail,
-        private_key: this.config.privateKey,
-      });
-      await this.doc.loadInfo();
+      // Validate required credentials
+      if (!this.config.spreadsheetId) {
+        throw new Error('Google Sheets ID is required');
+      }
+      if (!this.config.clientEmail) {
+        throw new Error('Service account email is required');
+      }
+      if (!this.config.privateKey) {
+        throw new Error('Service account private key is required');
+      }
+
+      // For now, we'll just mark as initialized since we're not using actual Google Sheets
       this.initialized = true;
-    } catch (error) {
-      console.error('Failed to initialize grading service:', error);
-      throw new Error('Failed to initialize grading service. Please check your credentials.');
+    } catch (error: any) {
+      const message = error.message || 'Failed to initialize grading service';
+      console.error('Grading service error:', message);
+      throw new Error(`Grading service initialization failed: ${message}`);
     }
   }
 
@@ -113,11 +117,13 @@ export class GradingService {
 
   private evaluateObjectionHandling(transcript: string, objections: Record<string, any>): number {
     let score = 7;
+    let objectionCount = 0;
     
-    Object.entries(objections).forEach(([category, objectionList]: [string, any]) => {
-      Object.entries(objectionList).forEach(([objection, responses]: [string, string[]]) => {
+    Object.entries(objections).forEach(([category, objectionList]) => {
+      Object.entries(objectionList).forEach(([objection, responses]) => {
         if (transcript.toLowerCase().includes(objection.toLowerCase())) {
-          responses.forEach(response => {
+          objectionCount++;
+          (responses as string[]).forEach(response => {
             if (transcript.toLowerCase().includes(response.toLowerCase())) {
               score += 1;
             }
@@ -126,6 +132,7 @@ export class GradingService {
       });
     });
     
+    if (objectionCount === 0) return 7; // Default score if no objections were handled
     return Math.min(Math.max(Math.round(score), 1), 10);
   }
 
@@ -178,40 +185,20 @@ export class GradingService {
     }
 
     try {
-      const sheet = this.doc.sheetsByIndex[0] || await this.doc.addSheet({
-        headerValues: [
-          'Agent Name',
-          'Timestamp',
-          'Call Type',
-          'Duration',
-          'Tone',
-          'On Script',
-          'Presentation',
-          'Objection Handling',
-          'Speaking',
-          'Overall Rating',
-          'Notes',
-          'Transcription'
-        ]
+      // For now, we'll just log the grade since we're not using actual Google Sheets
+      console.log('Recording grade:', {
+        agentName: grade.agentName,
+        timestamp: grade.timestamp,
+        callType: grade.callType,
+        duration: grade.duration,
+        grades: grade.grades,
+        notes: grade.notes
       });
-
-      await sheet.addRow({
-        'Agent Name': grade.agentName,
-        'Timestamp': grade.timestamp,
-        'Call Type': grade.callType,
-        'Duration': grade.duration,
-        'Tone': grade.grades.tone,
-        'On Script': grade.grades.onScript,
-        'Presentation': grade.grades.presentation,
-        'Objection Handling': grade.grades.objectionHandling,
-        'Speaking': grade.grades.speaking,
-        'Overall Rating': grade.grades.overall,
-        'Notes': grade.notes,
-        'Transcription': grade.transcription
-      });
+      
+      return true;
     } catch (error) {
       console.error('Failed to record grade:', error);
-      throw new Error('Failed to record grade in spreadsheet');
+      throw new Error('Failed to record grade');
     }
   }
 }

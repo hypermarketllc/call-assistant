@@ -3,9 +3,19 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import cluster from 'cluster';
 import os from 'os';
+import { WebhookHandler } from '../services/webhookHandler.js';
 
 const app = express();
 const port = process.env.PORT || 3002;
+
+// Create webhook handler
+const webhookHandler = new WebhookHandler(
+  (event) => {
+    // Handle events here
+    console.log('Received event:', event);
+  },
+  process.env.JUSTCALL_WEBHOOK_SECRET
+);
 
 // Middleware
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -21,16 +31,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// Webhook Handler
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy' });
+});
+
+// Webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
-    // Your webhook logic here
-    const data = req.body;
-    // Process the webhook data
-    res.status(200).json({ message: 'Webhook processed successfully' });
+    const signature = req.headers['x-justcall-signature'];
+    const payload = JSON.stringify(req.body);
+    
+    webhookHandler.handleWebhook(req.body, payload, signature);
+    
+    res.status(200).json({ status: 'success' });
   } catch (error) {
-    console.error('Webhook processing error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Webhook error:', error);
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
