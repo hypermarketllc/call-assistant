@@ -13,6 +13,9 @@ export class AudioService {
   private isInbound: boolean = true;
   private isRecording: boolean = false;
   private justcallSession: string | null = null;
+  private retryCount: number = 0;
+  private maxRetries: number = 3;
+  private retryDelay: number = 1000; // 1 second delay between retries
 
   constructor(
     private config: AudioConfig,
@@ -22,6 +25,10 @@ export class AudioService {
   ) {}
 
   private async transcribeAudio(audioBlob: Blob): Promise<string> {
+    if (!this.config.sttApiKey) {
+      throw new Error('Speech-to-Text API key is not configured');
+    }
+
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.webm');
     formData.append('model', 'whisper-1');
@@ -36,14 +43,26 @@ export class AudioService {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to transcribe audio');
+        const error = await response.json().catch(() => ({ error: { message: 'Failed to transcribe audio' } }));
+        throw new Error(error.error?.message || 'Failed to transcribe audio');
       }
 
       const data = await response.json();
       return data.text;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Transcription error:', error);
-      throw error;
+      
+      if (this.retryCount < this.maxRetries) {
+        this.retryCount++;
+        console.log(`Retrying transcription (attempt ${this.retryCount}/${this.maxRetries})...`);
+        
+        // Add exponential backoff
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay * Math.pow(2, this.retryCount - 1)));
+        
+        return this.transcribeAudio(audioBlob);
+      }
+      
+      throw new Error(`Failed to transcribe audio: ${error.message}`);
     }
   }
 
@@ -55,79 +74,34 @@ export class AudioService {
 
     try {
       const transcript = await this.transcribeAudio(audioBlob);
-      this.transcriptParts.push(transcript);
-      
-      if (this.onTranscriptUpdate) {
-        this.onTranscriptUpdate(this.transcriptParts.join(' '));
+      if (transcript.trim()) { // Only add non-empty transcripts
+        this.transcriptParts.push(transcript);
+        
+        if (this.onTranscriptUpdate) {
+          this.onTranscriptUpdate(this.transcriptParts.join(' '));
+        }
       }
-    } catch (error) {
-      console.error('Failed to process audio chunk:', error);
-    }
-  }
-
-  private async initializeJustCallSession() {
-    try {
-      const [key, secret] = this.config.dialerApiKey.split(':');
-      if (!key || !secret) {
-        throw new Error('Invalid JustCall API key format. Expected format: key:secret');
-      }
-
-      const response = await fetch('https://api.justcall.io/v1/calls/init', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${btoa(`${key}:${secret}`)}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          webhook_url: this.config.webhookUrl,
-          recording_enabled: true
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Failed to initialize JustCall session');
-      }
-
-      const data = await response.json();
-      this.justcallSession = data.session_id;
-      return data.session_id;
     } catch (error: any) {
-      console.error('Failed to initialize JustCall session:', error);
-      throw error;
+      console.error('Failed to process audio chunk:', error);
+      // Don't throw here to keep recording going
     }
-  }
-
-  public setTranscriptUpdateCallback(callback: (transcript: string) => void) {
-    this.onTranscriptUpdate = callback;
-  }
-
-  public async getCallAnalysis(): Promise<{
-    transcript: string;
-    analysis: {
-      grades: any;
-      notes: string;
-    };
-  } | null> {
-    if (!this.gradingService || !this.currentScript || !this.objections) {
-      return null;
-    }
-
-    const transcript = this.transcriptParts.join(' ');
-    const analysis = await this.gradingService.analyzeCall(
-      transcript,
-      this.currentScript,
-      this.objections
-    );
-
-    return {
-      transcript,
-      analysis
-    };
   }
 
   public async startListening() {
     try {
+      console.log('Starting audio service...');
+      
+      // Reset retry count
+      this.retryCount = 0;
+
+      // Check API keys
+      if (!this.config.dialerApiKey) {
+        throw new Error('JustCall API key is required');
+      }
+      if (!this.config.sttApiKey) {
+        throw new Error('Speech-to-Text API key is required');
+      }
+
       const permissionResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
       
       if (permissionResult.state === 'denied') {
@@ -135,10 +109,7 @@ export class AudioService {
       }
 
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      if (!this.isInbound) {
-        await this.initializeJustCallSession();
-      }
+      console.log('Microphone access granted');
 
       this.audioContext = new AudioContext();
       this.analyzer = this.audioContext.createAnalyser();
@@ -163,6 +134,7 @@ export class AudioService {
       // Start recording in chunks
       this.isRecording = true;
       this.mediaRecorder.start();
+      console.log('Recording started');
 
       // Process chunks every 5 seconds
       const processInterval = setInterval(() => {
@@ -176,32 +148,17 @@ export class AudioService {
 
       return true;
     } catch (error: any) {
+      console.error('Failed to start listening:', error);
       if (error.name === 'NotAllowedError') {
         throw new Error('Microphone access was denied. Please allow microphone access to use this feature.');
       } else {
-        console.error('Failed to start listening:', error);
         throw error;
       }
     }
   }
 
-  public async endJustCallSession() {
-    if (this.justcallSession) {
-      try {
-        await fetch(`https://api.justcall.io/v1/calls/${this.justcallSession}/end`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.config.dialerApiKey}`
-          }
-        });
-      } catch (error) {
-        console.error('Failed to end JustCall session:', error);
-      }
-      this.justcallSession = null;
-    }
-  }
-
   public stopListening() {
+    console.log('Stopping audio service...');
     this.isRecording = false;
 
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
@@ -216,12 +173,15 @@ export class AudioService {
       this.audioContext.close();
     }
 
-    this.endJustCallSession();
-
     this.mediaStream = null;
     this.audioContext = null;
     this.analyzer = null;
     this.mediaRecorder = null;
+    console.log('Audio service stopped');
+  }
+
+  public setTranscriptUpdateCallback(callback: (transcript: string) => void) {
+    this.onTranscriptUpdate = callback;
   }
 
   public clearTranscript() {

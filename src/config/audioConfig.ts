@@ -7,7 +7,7 @@ export interface AudioConfig {
 }
 
 // Validate JustCall API key format (key:secret)
-const justCallApiKeyRegex = /^[a-f0-9]+:[a-f0-9]+$/i;
+const justCallApiKeyRegex = /^[a-f0-9]{32}:[a-f0-9]{32}$/i;
 
 const configSchema = z.object({
   dialerApiKey: z.string().min(1, 'JustCall API key is required'),
@@ -46,6 +46,11 @@ export const saveAudioConfig = (config: AudioConfig): boolean => {
       ...config,
       dialerApiKey: config.dialerApiKey.trim().replace(/\s+/g, '')
     };
+
+    // Validate JustCall API key format
+    if (!validateJustCallApiKey(cleanedConfig.dialerApiKey)) {
+      throw new Error('Invalid JustCall API key format');
+    }
 
     configSchema.parse(cleanedConfig);
     localStorage.setItem('callAssistantConfig', JSON.stringify(cleanedConfig));

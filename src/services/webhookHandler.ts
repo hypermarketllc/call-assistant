@@ -1,24 +1,47 @@
-import type { JustCallEvent, JustCallEventType } from '../types/justcall';
+import type { JustCallEvent } from '../types/justcall';
 import crypto from 'crypto';
 
 export class WebhookHandler {
+  private eventListeners: ((event: JustCallEvent) => void)[] = [];
+
+  constructor(
+    private onEventCallback: (event: JustCallEvent) => void,
+    private webhookSecret: string
+  ) {
+    this.eventListeners.push(onEventCallback);
+  }
+
+  public addEventListener(callback: (event: JustCallEvent) => void) {
+    this.eventListeners.push(callback);
+  }
+
   private verifySignature(signature: string, payload: string, secret: string): boolean {
     const hmac = crypto.createHmac('sha256', secret);
     const calculatedSignature = hmac.update(payload).digest('hex');
     return signature === calculatedSignature;
   }
 
-  constructor(
-    private onEventCallback: (event: JustCallEvent) => void,
-    private webhookSecret: string
-  ) {}
+  public handleWebhook(event: JustCallEvent, rawPayload: string, signature?: string) {
+    console.log('Received webhook event:', {
+      type: event.event_type,
+      callId: event.call_id,
+      status: event.status
+    });
 
-  handleWebhook(event: JustCallEvent, rawPayload: string, signature?: string) {
     // Verify webhook signature if provided
     if (signature && !this.verifySignature(signature, rawPayload, this.webhookSecret)) {
       console.error('Invalid webhook signature');
       return;
     }
+
+    // Notify all listeners
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error('Error in webhook listener:', error);
+      }
+    });
 
     // Process the event
     switch (event.event_type) {
@@ -47,16 +70,13 @@ export class WebhookHandler {
         this.handleQueueEvent(event);
         break;
     }
-
-    // Forward the event to the callback
-    this.onEventCallback(event);
   }
 
   private handleCallStart(event: JustCallEvent) {
     console.log(`Call initiated: ${event.call_id}`);
     
     // Update UI with call status
-    this.onEventCallback({
+    this.notifyListeners({
       ...event,
       status: 'ringing'
     });
@@ -66,7 +86,7 @@ export class WebhookHandler {
     console.log(`Call answered: ${event.call_id}`);
     
     // Start recording and transcription
-    this.onEventCallback({
+    this.notifyListeners({
       ...event,
       status: 'answered'
     });
@@ -81,7 +101,7 @@ export class WebhookHandler {
     }
 
     // Update UI with final call status and duration
-    this.onEventCallback({
+    this.notifyListeners({
       ...event,
       status: 'completed'
     });
@@ -94,7 +114,7 @@ export class WebhookHandler {
       console.log(`Voicemail available at: ${event.voicemail_url}`);
     }
 
-    this.onEventCallback({
+    this.notifyListeners({
       ...event,
       status: 'missed'
     });
@@ -106,13 +126,11 @@ export class WebhookHandler {
         summary: event.ai_report.summary,
         sentiment: event.ai_report.sentiment,
         actionItems: event.ai_report.action_items,
-        topics: event.ai_report.topics,
-        complianceScore: event.ai_report.compliance_score,
-        talkRatio: event.ai_report.talk_ratio
+        topics: event.ai_report.topics
       });
 
       // Update call metrics and analysis in the UI
-      this.onEventCallback(event);
+      this.notifyListeners(event);
     }
   }
 
@@ -121,6 +139,16 @@ export class WebhookHandler {
     console.log(`Call ${event.call_id} ${action} queue: ${event.queue_name}`);
     
     // Update queue status in UI
-    this.onEventCallback(event);
+    this.notifyListeners(event);
+  }
+
+  private notifyListeners(event: JustCallEvent) {
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error('Error in event listener:', error);
+      }
+    });
   }
 }

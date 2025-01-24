@@ -1,8 +1,6 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
-import cluster from 'cluster';
-import os from 'os';
 import { WebhookHandler } from '../services/webhookHandler.js';
 
 const app = express();
@@ -11,23 +9,19 @@ const port = process.env.PORT || 3002;
 // Create webhook handler
 const webhookHandler = new WebhookHandler(
   (event) => {
-    // Handle events here
-    console.log('Received event:', event);
+    // Broadcast event to connected clients
+    console.log('Broadcasting event to clients:', event.event_type);
   },
   process.env.JUSTCALL_WEBHOOK_SECRET
 );
 
 // Middleware
-app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.json());
 app.use(cors());
 
-// Logging and Performance Tracking
+// Logging middleware
 app.use((req, res, next) => {
-  const startTime = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - startTime;
-    console.log(`Webhook Request: ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
-  });
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
 
@@ -37,8 +31,13 @@ app.get('/health', (req, res) => {
 });
 
 // Webhook endpoint
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', (req, res) => {
   try {
+    console.log('Received webhook:', {
+      type: req.body.event_type,
+      callId: req.body.call_id
+    });
+
     const signature = req.headers['x-justcall-signature'];
     const payload = JSON.stringify(req.body);
     
@@ -51,21 +50,14 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Cluster Management
-if (cluster.isPrimary) {
-  const numCPUs = os.cpus().length;
-  console.log(`Primary ${process.pid} is running`);
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ status: 'error', message: err.message });
+});
 
-  for (let i = 0; i < numCPUs; i++) {
-    cluster.fork();
-  }
-
-  cluster.on('exit', (worker, code, signal) => {
-    console.log(`Worker ${worker.process.pid} died`);
-    cluster.fork();
-  });
-} else {
-  app.listen(port, () => {
-    console.log(`Worker ${process.pid} started on port ${port}`);
-  });
-}
+// Start server
+app.listen(port, () => {
+  console.log(`Webhook server running on port ${port}`);
+  console.log(`Webhook URL: https://acc-projects.com/webhook`);
+});
