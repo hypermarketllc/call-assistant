@@ -23,29 +23,60 @@ export class AudioService {
 
   private async initializeJustCallSession(): Promise<string> {
     try {
+      // Validate required configuration
+      if (!this.config.dialerApiKey) {
+        throw new Error('JustCall API key is required');
+      }
+
+      const [key, secret] = this.config.dialerApiKey.split(':');
+      if (!key || !secret) {
+        throw new Error('Invalid JustCall API key format. Expected format: key:secret');
+      }
+
       console.log('Initializing JustCall session...');
-      const response = await fetch('/.netlify/functions/justcall-init', {
+      
+      const apiUrl = '/api/justcall/init';
+      const webhookUrl = this.config.webhookUrl || window.location.origin + '/webhook';
+
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          recording_enabled: true
+          recording_enabled: true,
+          webhook_url: webhookUrl
         })
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to initialize JustCall session');
+      // First try to get the response as text
+      const responseText = await response.text();
+      console.log('JustCall API raw response:', responseText);
+
+      let data;
+      try {
+        // Then parse it as JSON if possible
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error('Failed to parse JustCall API response:', e);
+        throw new Error('Invalid response from JustCall API');
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        console.error('JustCall API error response:', data);
+        throw new Error(data.error || 'Failed to initialize JustCall session');
+      }
+
+      if (!data.session_id) {
+        throw new Error('No session ID received from JustCall');
+      }
+
       this.justcallSession = data.session_id;
       console.log('JustCall session initialized:', this.justcallSession);
       return data.session_id;
     } catch (error: any) {
       console.error('JustCall initialization error:', error);
-      throw new Error(`Failed to initialize JustCall session: ${error.message}`);
+      throw new Error(`JustCall initialization failed: ${error.message}`);
     }
   }
 
@@ -56,11 +87,16 @@ export class AudioService {
     this.audioChunks = [];
 
     try {
-      // Convert blob to base64
+      if (!this.config.sttApiKey) {
+        throw new Error('Speech-to-Text API key is required');
+      }
+
       const buffer = await audioBlob.arrayBuffer();
       const base64Audio = Buffer.from(buffer).toString('base64');
 
-      const response = await fetch('/.netlify/functions/transcribe', {
+      const apiUrl = '/api/transcribe';
+
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -70,11 +106,23 @@ export class AudioService {
         })
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to transcribe audio');
+      // First try to get the response as text
+      const responseText = await response.text();
+      console.log('Transcription API raw response:', responseText);
+
+      let data;
+      try {
+        // Then parse it as JSON if possible
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error('Failed to parse transcription response:', e);
+        throw new Error('Invalid response from transcription service');
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to transcribe audio');
+      }
+
       if (data.text?.trim()) {
         this.transcriptParts.push(data.text);
         
@@ -90,6 +138,15 @@ export class AudioService {
   public async startListening(): Promise<boolean> {
     try {
       console.log('Starting audio service...');
+
+      // Validate required configuration
+      if (!this.config.dialerApiKey) {
+        throw new Error('JustCall API key is required');
+      }
+
+      if (!this.config.sttApiKey) {
+        throw new Error('Speech-to-Text API key is required');
+      }
 
       // Initialize JustCall session first
       await this.initializeJustCallSession();
@@ -143,7 +200,7 @@ export class AudioService {
       return true;
     } catch (error: any) {
       console.error('Failed to start listening:', error);
-      throw error;
+      throw new Error(error.message || 'Failed to start audio service');
     }
   }
 
@@ -165,9 +222,28 @@ export class AudioService {
 
     if (this.justcallSession) {
       try {
-        await fetch(`/.netlify/functions/justcall-end/${this.justcallSession}`, {
+        const apiUrl = `/api/justcall/end/${this.justcallSession}`;
+        const response = await fetch(apiUrl, {
           method: 'POST'
         });
+
+        // First try to get the response as text
+        const responseText = await response.text();
+        console.log('JustCall end session raw response:', responseText);
+
+        let data;
+        try {
+          // Then parse it as JSON if possible
+          data = JSON.parse(responseText);
+        } catch (e) {
+          console.error('Failed to parse JustCall end session response:', e);
+          throw new Error('Invalid response from JustCall API');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to end JustCall session');
+        }
+
         console.log('JustCall session ended');
       } catch (error) {
         console.error('Failed to end JustCall session:', error);
@@ -265,9 +341,10 @@ export const useAudioService = (config: AudioConfig) => {
       return service;
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to start listening';
+      console.error('Failed to start listening:', err);
       setError(errorMessage);
       setIsListening(false);
-      throw err;
+      throw new Error(errorMessage);
     }
   };
 

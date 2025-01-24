@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Mic, MicOff, FileText, Minimize2, Maximize2, AlertCircle, CheckCircle2, Clock, Search, ChevronDown, ChevronUp, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
+import { Mic, MicOff, FileText, Minimize2, Maximize2, Clock, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
 import { checklistItems, defaultScripts } from './config/callConfig';
 import { useAudioService } from './services/audioService';
 import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey } from './config/audioConfig';
