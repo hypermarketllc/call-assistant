@@ -6,63 +6,87 @@ export interface AudioConfig {
   webhookUrl: string;      // Webhook endpoint URL
 }
 
-// Updated regex to be more flexible with JustCall API key format
-const justCallApiKeyRegex = /^[a-f0-9]+:[a-f0-9]+$/i;
+// Validate JustCall API key format (40-char hex keys separated by colon)
+const justCallApiKeyRegex = /^[a-f0-9]{40}:[a-f0-9]{40}$/i;
 
-const configSchema = z.object({
-  dialerApiKey: z.string().min(1, 'JustCall API key is required'),
-  sttApiKey: z.string().min(1, 'Speech-to-Text API key is required'),
-  webhookUrl: z.string().url().default('https://acc-projects.com/webhook')
+// Validate OpenAI API key format (starts with 'sk-' followed by base58 chars)
+const openAIApiKeyRegex = /^sk-[a-zA-Z0-9]{32,}$/;
+
+export const configSchema = z.object({
+  dialerApiKey: z.string()
+    .min(1, 'JustCall API key is required')
+    .regex(justCallApiKeyRegex, 'Invalid JustCall API key format. Expected format: 40-char-hex:40-char-hex'),
+  sttApiKey: z.string()
+    .min(1, 'OpenAI API key is required')
+    .regex(openAIApiKeyRegex, 'Invalid OpenAI API key format. Should start with sk- followed by at least 32 characters'),
+  webhookUrl: z.string()
+    .url('Invalid webhook URL')
+    .default('http://localhost:3002/webhook')
 });
 
-// Always prioritize environment variables, only use localStorage as fallback
 const getSavedConfig = (): AudioConfig => {
-  const envConfig = {
-    dialerApiKey: import.meta.env.VITE_JUSTCALL_API_KEY || '',
-    sttApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
-    webhookUrl: import.meta.env.VITE_WEBHOOK_URL || 'https://acc-projects.com/webhook'
+  const defaultConfig = {
+    dialerApiKey: '',
+    sttApiKey: '',
+    webhookUrl: 'http://localhost:3002/webhook'
   };
 
-  // If all environment variables are present, use them
-  if (envConfig.dialerApiKey && envConfig.sttApiKey && envConfig.webhookUrl) {
-    return envConfig;
-  }
-
-  // Otherwise, try to get from localStorage and fall back to env vars for missing values
   try {
-    const saved = localStorage.getItem('callAssistantConfig');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return configSchema.parse({
-        dialerApiKey: envConfig.dialerApiKey || parsed.dialerApiKey || '',
-        sttApiKey: envConfig.sttApiKey || parsed.sttApiKey || '',
-        webhookUrl: envConfig.webhookUrl || parsed.webhookUrl || 'https://acc-projects.com/webhook'
-      });
+    // First try environment variables
+    const envConfig = {
+      dialerApiKey: import.meta.env.VITE_JUSTCALL_API_KEY || '',
+      sttApiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
+      webhookUrl: import.meta.env.VITE_WEBHOOK_URL || defaultConfig.webhookUrl
+    };
+
+    // Validate environment variables
+    const validatedEnvConfig = configSchema.safeParse(envConfig);
+    if (validatedEnvConfig.success) {
+      return validatedEnvConfig.data;
     }
+
+    // Try loading from localStorage
+    const savedConfig = localStorage.getItem('callAssistantConfig');
+    if (savedConfig) {
+      const parsed = JSON.parse(savedConfig);
+      const mergedConfig = {
+        dialerApiKey: envConfig.dialerApiKey || parsed.dialerApiKey || defaultConfig.dialerApiKey,
+        sttApiKey: envConfig.sttApiKey || parsed.sttApiKey || defaultConfig.sttApiKey,
+        webhookUrl: envConfig.webhookUrl || parsed.webhookUrl || defaultConfig.webhookUrl
+      };
+
+      const validatedConfig = configSchema.safeParse(mergedConfig);
+      if (validatedConfig.success) {
+        return validatedConfig.data;
+      }
+    }
+
+    // Return default config if no valid config found
+    return defaultConfig;
   } catch (error) {
     console.error('Failed to load config:', error);
+    return defaultConfig;
   }
-  
-  return envConfig;
 };
 
 export const defaultAudioConfig: AudioConfig = getSavedConfig();
 
-// Only save to localStorage if environment variables are not present
 export const saveAudioConfig = (config: AudioConfig): boolean => {
   try {
     const cleanedConfig = {
       ...config,
-      dialerApiKey: config.dialerApiKey.trim().replace(/\s+/g, '')
+      dialerApiKey: config.dialerApiKey.trim(),
+      sttApiKey: config.sttApiKey.trim(),
+      webhookUrl: config.webhookUrl.trim()
     };
 
-    // Validate JustCall API key format
-    if (!validateJustCallApiKey(cleanedConfig.dialerApiKey)) {
-      throw new Error('Invalid JustCall API key format');
+    // Validate the configuration
+    const validatedConfig = configSchema.safeParse(cleanedConfig);
+    if (!validatedConfig.success) {
+      console.error('Config validation failed:', validatedConfig.error);
+      return false;
     }
 
-    configSchema.parse(cleanedConfig);
-    
     // Only save values that aren't in environment variables
     const envConfig = {
       dialerApiKey: import.meta.env.VITE_JUSTCALL_API_KEY,
@@ -85,6 +109,11 @@ export const saveAudioConfig = (config: AudioConfig): boolean => {
 };
 
 export const validateJustCallApiKey = (key: string): boolean => {
-  const cleaned = key.trim().replace(/\s+/g, '');
+  const cleaned = key.trim();
   return justCallApiKeyRegex.test(cleaned);
+};
+
+export const validateOpenAIApiKey = (key: string): boolean => {
+  const cleaned = key.trim();
+  return openAIApiKeyRegex.test(cleaned);
 };

@@ -2,8 +2,8 @@ export default {
   apps: [
     {
       name: 'call-assistant-web',
-      script: 'node_modules/vite/bin/vite.js',
-      args: 'preview',
+      script: 'npm',
+      args: 'run start:web',
       env: {
         NODE_ENV: 'production',
         PORT: '3000'
@@ -11,23 +11,22 @@ export default {
     },
     {
       name: 'call-assistant-proxy',
-      script: './src/server/proxy.js',
-      interpreter: 'node',
-      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
+      script: 'npm',
+      args: 'run start:proxy',
       env: {
         NODE_ENV: 'production',
-        PORT: '3002',
+        PORT: '3004',
         PROXY_PORT: '3004'
       }
     },
     {
       name: 'call-assistant-webhook',
-      script: './src/server/webhook.js',
-      interpreter: 'node',
-      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
+      script: 'npm',
+      args: 'run start:webhook',
       env: {
         NODE_ENV: 'production',
-        PORT: '3003'
+        PORT: '3002',
+        WS_PORT: '3003'
       }
     }
   ]

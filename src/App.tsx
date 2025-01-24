@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, FileText, Minimize2, Maximize2, Clock, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
-import { checklistItems, defaultScripts } from './config/callConfig';
+import { checklistItems, defaultScripts, type ChecklistItem } from './config/callConfig';
 import { useAudioService } from './services/audioService';
-import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey } from './config/audioConfig';
+import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey, validateOpenAIApiKey } from './config/audioConfig';
 import { GradingService } from './services/gradingService';
 import { defaultGradingConfig } from './config/gradingConfig';
 import { GradeCallModal } from './components/GradeCallModal';
@@ -29,7 +29,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [showObjections, setShowObjections] = useState(false);
-  const [activeChecklist, setActiveChecklist] = useState(
+  const [activeChecklist, setActiveChecklist] = useState<ChecklistItem[]>(
     checklistItems.map(item => ({ ...item, completed: false }))
   );
   const [checklist, setChecklist] = useState(checklistItems);
@@ -322,9 +322,14 @@ export function App() {
       sttApiKey: '[REDACTED]'
     });
     
-    // Validate JustCall API key format
+    // Validate API keys
     if (!validateJustCallApiKey(apiConfig.dialerApiKey)) {
-      setConfigError('Invalid JustCall API key format. Expected format: key:secret');
+      setConfigError('Invalid JustCall API key format. Expected format: 40-char-hex:40-char-hex');
+      return;
+    }
+
+    if (!validateOpenAIApiKey(apiConfig.sttApiKey)) {
+      setConfigError('Invalid OpenAI API key format. Should start with sk-');
       return;
     }
 
@@ -569,18 +574,18 @@ export function App() {
                     <div key={category}>
                       <h3 className="font-medium text-gray-900 mb-2">{category}</h3>
                       <div className="space-y-2">
-                        {items.map((objection, index) => (
+                        {Object.entries(items).map(([objection, responses]) => (
                           <button
-                            key={index}
+                            key={objection}
                             onClick={() => setActiveObjection({
                               category,
-                              objection: objection.objection,
-                              responses: objection.responses,
+                              objection,
+                              responses,
                               returnIndex: currentScriptIndex
                             })}
                             className="w-full text-left p-3 rounded bg-gray-50 hover:bg-gray-100"
                           >
-                            {objection.objection}
+                            {objection}
                           </button>
                         ))}
                       </div>
@@ -727,8 +732,7 @@ export function App() {
           script={scripts.find(s => s.id === editingScriptId)!}
           onSave={handleScriptSave}
           onClose={() => setEditingScriptId(null)}
-        />
-      )}
+        /> )}
     </>
   );
 }

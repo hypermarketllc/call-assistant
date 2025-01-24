@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { GradingService } from './gradingService';
 import type { AudioConfig } from '../config/audioConfig';
+import type { JustCallEvent } from '../types/justcall';
 
 export class AudioService {
   private mediaStream: MediaStream | null = null;
@@ -10,252 +11,275 @@ export class AudioService {
   private audioChunks: Blob[] = [];
   private transcriptParts: string[] = [];
   private onTranscriptUpdate: ((transcript: string) => void) | null = null;
-  private isInbound: boolean = true;
+  private ws: WebSocket | null = null;
+  private currentCallId: string | null = null;
   private isRecording: boolean = false;
-  private justcallSession: string | null = null;
+  private processInterval: NodeJS.Timer | null = null;
+  private retryCount: number = 0;
+  private readonly MAX_RETRIES = 3;
 
   constructor(
     private config: AudioConfig,
     private gradingService?: GradingService,
     private currentScript?: string,
     private objections?: Record<string, any>
-  ) {}
+  ) {
+    this.initializeWebSocket();
+  }
 
-  private async initializeJustCallSession(): Promise<string> {
+  private initializeWebSocket() {
+    const wsUrl = `ws://localhost:${process.env.WS_PORT || 3003}`;
+    this.ws = new WebSocket(wsUrl);
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data: JustCallEvent = JSON.parse(event.data);
+        this.handleCallEvent(data);
+      } catch (error) {
+        console.error('Failed to parse WebSocket message:', error);
+      }
+    };
+
+    this.ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    this.ws.onclose = () => {
+      console.log('WebSocket connection closed');
+      setTimeout(() => this.initializeWebSocket(), 5000);
+    };
+  }
+
+  private handleCallEvent(event: JustCallEvent) {
+    switch (event.type) {
+      case 'call.initiated':
+        this.currentCallId = event.callId;
+        console.log('Call initiated:', event.callId);
+        break;
+
+      case 'call.completed':
+        console.log('Call completed:', event.callId);
+        this.currentCallId = null;
+        void this.stopRecording();
+        break;
+    }
+  }
+
+  private async blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          // Remove the data URL prefix
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        } else {
+          reject(new Error('Failed to convert blob to base64'));
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  private async initializeAudioContext(): Promise<void> {
+    // Create AudioContext first
+    this.audioContext = new AudioContext({
+      latencyHint: 'interactive'
+    });
+
+    // Wait for audio context to be ready
+    if (this.audioContext.state !== 'running') {
+      await this.audioContext.resume();
+    }
+
+    this.analyzer = this.audioContext.createAnalyser();
+    this.analyzer.fftSize = 2048;
+  }
+
+  public async startListening(): Promise<boolean> {
     try {
-      // Validate required configuration
-      if (!this.config.dialerApiKey) {
-        throw new Error('JustCall API key is required');
+      // Check if already recording
+      if (this.isRecording) {
+        console.log('Already recording');
+        return true;
       }
 
-      const [key, secret] = this.config.dialerApiKey.split(':');
-      if (!key || !secret) {
-        throw new Error('Invalid JustCall API key format. Expected format: key:secret');
-      }
-
-      console.log('Initializing JustCall session...');
+      console.log('Requesting microphone access...');
       
-      const apiUrl = '/api/justcall/init';
-      const webhookUrl = this.config.webhookUrl || window.location.origin + '/webhook';
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          recording_enabled: true,
-          webhook_url: webhookUrl
-        })
+      // Initialize audio context first
+      await this.initializeAudioContext();
+      
+      // Request microphone access with specific constraints
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1 // Mono audio is sufficient for speech
+        }
       });
 
-      // First try to get the response as text
-      const responseText = await response.text();
-      console.log('JustCall API raw response:', responseText);
-
-      let data;
-      try {
-        // Then parse it as JSON if possible
-        data = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Failed to parse JustCall API response:', e);
-        throw new Error('Invalid response from JustCall API');
+      // Connect audio nodes
+      if (this.audioContext && this.analyzer) {
+        const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+        source.connect(this.analyzer);
       }
 
-      if (!response.ok) {
-        console.error('JustCall API error response:', data);
-        throw new Error(data.error || 'Failed to initialize JustCall session');
-      }
+      // Check supported MIME types
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg';
 
-      if (!data.session_id) {
-        throw new Error('No session ID received from JustCall');
-      }
+      // Initialize media recorder with optimal settings
+      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
+        mimeType,
+        audioBitsPerSecond: 128000
+      });
 
-      this.justcallSession = data.session_id;
-      console.log('JustCall session initialized:', this.justcallSession);
-      return data.session_id;
-    } catch (error: any) {
-      console.error('JustCall initialization error:', error);
-      throw new Error(`JustCall initialization failed: ${error.message}`);
+      this.mediaRecorder.ondataavailable = async (event) => {
+        if (event.data.size > 0) {
+          this.audioChunks.push(event.data);
+          // Process immediately if we have data
+          if (this.isRecording) {
+            await this.processAudioChunk();
+          }
+        }
+      };
+
+      // Start recording
+      this.mediaRecorder.start(3000); // Collect data every 3 seconds
+      this.isRecording = true;
+      this.retryCount = 0;
+
+      console.log('Recording started with settings:', {
+        mimeType,
+        sampleRate: this.audioContext.sampleRate,
+        channelCount: 1
+      });
+
+      return true;
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      await this.cleanup();
+      throw error;
     }
   }
 
   private async processAudioChunk(): Promise<void> {
     if (this.audioChunks.length === 0) return;
 
-    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
-    this.audioChunks = [];
-
     try {
       if (!this.config.sttApiKey) {
         throw new Error('Speech-to-Text API key is required');
       }
 
-      const buffer = await audioBlob.arrayBuffer();
-      const base64Audio = Buffer.from(buffer).toString('base64');
+      const audioBlob = new Blob(this.audioChunks, { 
+        type: this.mediaRecorder?.mimeType || 'audio/webm' 
+      });
+      this.audioChunks = []; // Clear processed chunks
 
-      const apiUrl = '/api/transcribe';
+      // Skip processing if blob is too small
+      if (audioBlob.size < 1024) {
+        return;
+      }
 
-      const response = await fetch(apiUrl, {
+      // Convert blob to base64
+      const base64Audio = await this.blobToBase64(audioBlob);
+
+      const response = await fetch('/api/transcribe', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          audio: base64Audio
-        })
+        body: JSON.stringify({ audio: base64Audio })
       });
 
-      // First try to get the response as text
-      const responseText = await response.text();
-      console.log('Transcription API raw response:', responseText);
-
-      let data;
-      try {
-        // Then parse it as JSON if possible
-        data = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Failed to parse transcription response:', e);
-        throw new Error('Invalid response from transcription service');
-      }
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to transcribe audio');
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(errorData.error || 'Transcription failed');
       }
 
+      const data = await response.json();
+      
       if (data.text?.trim()) {
         this.transcriptParts.push(data.text);
-        
         if (this.onTranscriptUpdate) {
           this.onTranscriptUpdate(this.transcriptParts.join(' '));
         }
       }
-    } catch (error: any) {
+
+      // Reset retry count on successful processing
+      this.retryCount = 0;
+    } catch (error) {
       console.error('Failed to process audio chunk:', error);
+      
+      // Implement retry logic
+      this.retryCount++;
+      if (this.retryCount < this.MAX_RETRIES) {
+        console.log(`Retrying audio processing (attempt ${this.retryCount + 1}/${this.MAX_RETRIES})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return this.processAudioChunk();
+      }
     }
   }
 
-  public async startListening(): Promise<boolean> {
-    try {
-      console.log('Starting audio service...');
-
-      // Validate required configuration
-      if (!this.config.dialerApiKey) {
-        throw new Error('JustCall API key is required');
+  private async cleanup() {
+    // Stop media recorder
+    if (this.mediaRecorder?.state !== 'inactive') {
+      try {
+        this.mediaRecorder?.stop();
+      } catch (error) {
+        console.error('Error stopping media recorder:', error);
       }
-
-      if (!this.config.sttApiKey) {
-        throw new Error('Speech-to-Text API key is required');
-      }
-
-      // Initialize JustCall session first
-      await this.initializeJustCallSession();
-
-      // Check microphone permissions
-      const permissionResult = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      if (permissionResult.state === 'denied') {
-        throw new Error('Microphone permission is denied');
-      }
-
-      // Get microphone access
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log('Microphone access granted');
-
-      // Set up audio processing
-      this.audioContext = new AudioContext();
-      this.analyzer = this.audioContext.createAnalyser();
-      const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      source.connect(this.analyzer);
-
-      // Configure MediaRecorder
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, {
-        mimeType: 'audio/webm'
-      });
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.audioChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.onstop = () => {
-        void this.processAudioChunk();
-      };
-
-      // Start recording
-      this.isRecording = true;
-      this.mediaRecorder.start();
-      console.log('Recording started');
-
-      // Process chunks every 5 seconds
-      const processInterval = setInterval(() => {
-        if (this.isRecording && this.mediaRecorder) {
-          this.mediaRecorder.stop();
-          this.mediaRecorder.start();
-        } else {
-          clearInterval(processInterval);
-        }
-      }, 5000);
-
-      return true;
-    } catch (error: any) {
-      console.error('Failed to start listening:', error);
-      throw new Error(error.message || 'Failed to start audio service');
     }
+
+    // Process any remaining audio chunks
+    if (this.audioChunks.length > 0) {
+      await this.processAudioChunk();
+    }
+
+    // Stop all tracks
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach(track => {
+        try {
+          track.stop();
+        } catch (error) {
+          console.error('Error stopping media track:', error);
+        }
+      });
+    }
+
+    // Close audio context
+    if (this.audioContext?.state !== 'closed') {
+      try {
+        await this.audioContext?.close();
+      } catch (error) {
+        console.error('Error closing audio context:', error);
+      }
+    }
+
+    // Clear WebSocket connection
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.close();
+    }
+
+    // Reset properties
+    this.mediaStream = null;
+    this.audioContext = null;
+    this.analyzer = null;
+    this.mediaRecorder = null;
+    this.isRecording = false;
+    this.audioChunks = [];
+    this.ws = null;
   }
 
   public async stopListening(): Promise<void> {
     console.log('Stopping audio service...');
     this.isRecording = false;
-
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      this.mediaRecorder.stop();
-    }
-
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-    }
-
-    if (this.audioContext) {
-      await this.audioContext.close();
-    }
-
-    if (this.justcallSession) {
-      try {
-        const apiUrl = `/api/justcall/end/${this.justcallSession}`;
-        const response = await fetch(apiUrl, {
-          method: 'POST'
-        });
-
-        // First try to get the response as text
-        const responseText = await response.text();
-        console.log('JustCall end session raw response:', responseText);
-
-        let data;
-        try {
-          // Then parse it as JSON if possible
-          data = JSON.parse(responseText);
-        } catch (e) {
-          console.error('Failed to parse JustCall end session response:', e);
-          throw new Error('Invalid response from JustCall API');
-        }
-
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to end JustCall session');
-        }
-
-        console.log('JustCall session ended');
-      } catch (error) {
-        console.error('Failed to end JustCall session:', error);
-      }
-    }
-
-    this.mediaStream = null;
-    this.audioContext = null;
-    this.analyzer = null;
-    this.mediaRecorder = null;
-    this.justcallSession = null;
-    console.log('Audio service stopped');
+    await this.cleanup();
   }
 
   public setTranscriptUpdateCallback(callback: (transcript: string) => void): void {
@@ -337,19 +361,23 @@ export const useAudioService = (config: AudioConfig) => {
       const success = await service.startListening();
       if (success) {
         setIsListening(true);
+        return service;
       }
-      return service;
+      throw new Error('Failed to start listening');
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to start listening';
-      console.error('Failed to start listening:', err);
+      console.error('Audio service error:', {
+        message: errorMessage,
+        stack: err.stack
+      });
       setError(errorMessage);
       setIsListening(false);
       throw new Error(errorMessage);
     }
   };
 
-  const stopListening = (service: AudioService) => {
-    void service.stopListening();
+  const stopListening = async (service: AudioService) => {
+    await service.stopListening();
     setIsListening(false);
     setError(null);
   };

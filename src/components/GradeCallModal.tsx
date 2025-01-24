@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { X } from 'lucide-react';
 
 interface GradeCallModalProps {
-  isOpen: boolean;
   onClose: () => void;
   onSubmit: (grades: {
     tone: number;
@@ -13,10 +12,14 @@ interface GradeCallModalProps {
     overall: number;
     notes: string;
   }) => void;
-  duration: string;
+  callMetrics: {
+    talkRatio: number;
+    compliance: number;
+    duration: string;
+  };
 }
 
-export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCallModalProps) {
+export function GradeCallModal({ onClose, onSubmit, callMetrics }: GradeCallModalProps) {
   const [grades, setGrades] = useState({
     tone: 5,
     onScript: 5,
@@ -26,8 +29,6 @@ export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCal
     overall: 5,
     notes: ''
   });
-
-  if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,7 +78,7 @@ export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCal
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="mb-6 text-sm text-gray-500">
-            Call Duration: {duration}
+            Call Duration: {callMetrics.duration}
           </div>
           
           {renderGradeInput('Tone', 'tone')}
