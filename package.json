@@ -9,9 +9,11 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "webhook": "node src/server/webhook.js",
-    "tunnel": "ngrok http 3000"
+    "tunnel": "ngrok http 3002"
   },
   "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
     "express": "^4.18.2",
     "file-saver": "^2.0.5",
     "google-spreadsheet": "^4.1.1",
@@ -21,6 +23,8 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@types/body-parser": "^1.19.5",
+    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/file-saver": "^2.0.7",
     "@types/react": "^18.2.15",
