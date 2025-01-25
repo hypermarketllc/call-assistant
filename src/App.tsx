@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Mic, MicOff, FileText, Minimize2, Maximize2, AlertCircle, CheckCircle2, Clock, Search, ChevronDown, ChevronUp, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
-import { checklistItems, defaultScripts } from './config/callConfig';
+import { Mic, MicOff, FileText, Minimize2, Maximize2, Clock, Settings, X, ArrowLeft, PhoneCall, PhoneOff } from 'lucide-react';
+import { checklistItems, defaultScripts, type ChecklistItem } from './config/callConfig';
 import { useAudioService } from './services/audioService';
-import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey } from './config/audioConfig';
+import { defaultAudioConfig, saveAudioConfig, validateJustCallApiKey, validateOpenAIApiKey } from './config/audioConfig';
 import { GradingService } from './services/gradingService';
 import { defaultGradingConfig } from './config/gradingConfig';
 import { GradeCallModal } from './components/GradeCallModal';
@@ -29,13 +29,14 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [showObjections, setShowObjections] = useState(false);
-  const [activeChecklist, setActiveChecklist] = useState(
+  const [activeChecklist, setActiveChecklist] = useState<ChecklistItem[]>(
     checklistItems.map(item => ({ ...item, completed: false }))
   );
   const [checklist, setChecklist] = useState(checklistItems);
   const [apiConfig, setApiConfig] = useState(defaultAudioConfig);
   const [showApiConfig, setShowApiConfig] = useState(false);
   const [isCallActive, setIsCallActive] = useState(false);
+  const [isWaitingForWebhook, setIsWaitingForWebhook] = useState(false);
   const [callStartTime, setCallStartTime] = useState<Date | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [currentAudioService, setCurrentAudioService] = useState<any>(null);
@@ -44,6 +45,12 @@ export function App() {
   const [showGradeModal, setShowGradeModal] = useState(false);
   const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [activeObjection, setActiveObjection] = useState<{
+    category: string;
+    objection: string;
+    responses: string[];
+    returnIndex: number;
+  } | null>(null);
 
   const currentScript = scripts.find(s => s.id === selectedScriptId) || scripts[0];
   const [objections, setObjections] = useState(currentScript.objections);
@@ -56,24 +63,123 @@ export function App() {
 
   const { isListening, error, permissionStatus, startListening, stopListening } = useAudioService(apiConfig);
 
-  const [activeObjection, setActiveObjection] = useState<{
-    category: string;
-    objection: string;
-    responses: string[];
-    returnIndex: number;
-  } | null>(null);
+  const handleStartCall = async () => {
+    setConfigError(null);
+    console.log('Starting call with config:', apiConfig);
 
-  useEffect(() => {
-    const script = scripts.find(s => s.id === selectedScriptId);
-    if (script) {
-      setObjections(script.objections);
+    // Check for required API keys
+    if (!apiConfig.dialerApiKey) {
+      setConfigError('JustCall API key is required');
+      setCurrentPrompt('JustCall API key is required. Please configure it in the API Settings.');
+      setShowApiConfig(true);
+      return;
     }
-  }, [selectedScriptId, scripts]);
 
-  useEffect(() => {
-    // Log current configuration on mount
-    console.log('Current API Configuration:', apiConfig);
-  }, []);
+    if (!apiConfig.sttApiKey) {
+      setConfigError('Speech-to-Text API key is required');
+      setCurrentPrompt('Speech-to-Text API key is required. Please configure it in the API Settings.');
+      setShowApiConfig(true);
+      return;
+    }
+
+    if (permissionStatus === 'denied') {
+      setCurrentPrompt('Microphone access is required. Please enable it in your browser settings.');
+      return;
+    }
+
+    try {
+      setIsCallActive(true);
+      setIsWaitingForWebhook(true);
+      setCallStartTime(new Date());
+      setCurrentScriptIndex(0);
+      setActiveChecklist(checklistItems.map(item => ({ ...item, completed: false })));
+      setCallMetrics({
+        talkRatio: 60,
+        compliance: 95,
+        duration: '00:00'
+      });
+      setIsMuted(false);
+      setCurrentPrompt('Waiting for call connection...');
+      
+      // We'll start the audio service only after receiving the webhook response
+    } catch (err: any) {
+      console.error('Failed to start call:', err);
+      setCurrentPrompt(err.message || 'Failed to start call. Please check your configuration.');
+      setIsCallActive(false);
+      setIsWaitingForWebhook(false);
+    }
+  };
+
+  const handleWebhookResponse = async (event: any) => {
+    if (isWaitingForWebhook && event.type === 'call.answered') {
+      setIsWaitingForWebhook(false);
+      
+      try {
+        const gradingService = new GradingService(defaultGradingConfig);
+        await gradingService.initialize();
+        
+        console.log('Starting audio service with config:', apiConfig);
+        const service = await startListening(
+          gradingService,
+          currentScript.content,
+          currentScript.objections
+        );
+        setCurrentAudioService(service);
+        setCurrentPrompt('Call connected successfully');
+      } catch (err: any) {
+        console.error('Failed to start audio service:', err);
+        setCurrentPrompt(err.message || 'Failed to start audio service. Please check your configuration.');
+        handleEndCall();
+      }
+    }
+  };
+
+  const handleEndCall = async () => {
+    setIsCallActive(false);
+    setIsWaitingForWebhook(false);
+    
+    if (currentAudioService) {
+      stopListening(currentAudioService);
+      
+      try {
+        const analysis = await currentAudioService.getCallAnalysis();
+        if (analysis) {
+          const { transcript, analysis: gradeAnalysis } = analysis;
+          
+          const gradingService = new GradingService(defaultGradingConfig);
+          await gradingService.initialize();
+          
+          await gradingService.recordGrade({
+            agentName,
+            timestamp: new Date().toISOString(),
+            callType: currentScript.name,
+            duration: callMetrics.duration,
+            grades: gradeAnalysis.grades,
+            notes: gradeAnalysis.notes,
+            transcription: transcript
+          });
+
+          setCurrentPrompt('Call graded and recorded successfully');
+          setShowGradeModal(true);
+        }
+      } catch (error) {
+        console.error('Failed to analyze call:', error);
+        setCurrentPrompt('Failed to analyze call. Please check your configuration.');
+      }
+    }
+
+    setCallStartTime(null);
+    setCurrentScriptIndex(0);
+    setActiveChecklist(checklistItems.map(item => ({ ...item, completed: false })));
+    setActiveObjection(null);
+    setCallMetrics({
+      talkRatio: 60,
+      compliance: 95,
+      duration: '00:00'
+    });
+    setIsMuted(false);
+    setCurrentAudioService(null);
+  };
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!isResizing) {
@@ -131,127 +237,6 @@ export function App() {
     setIsResizing(true);
     setResizeHandle(handle);
     setDragStart({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleStartCall = async () => {
-    setConfigError(null);
-    console.log('Starting call with config:', apiConfig);
-
-    // Check for required API keys
-    if (!apiConfig.dialerApiKey) {
-      setConfigError('JustCall API key is required');
-      setCurrentPrompt('JustCall API key is required. Please configure it in the API Settings.');
-      setShowApiConfig(true);
-      return;
-    }
-
-    if (!apiConfig.sttApiKey) {
-      setConfigError('Speech-to-Text API key is required');
-      setCurrentPrompt('Speech-to-Text API key is required. Please configure it in the API Settings.');
-      setShowApiConfig(true);
-      return;
-    }
-
-    if (permissionStatus === 'denied') {
-      setCurrentPrompt('Microphone access is required. Please enable it in your browser settings.');
-      return;
-    }
-
-    try {
-      setIsCallActive(true);
-      setCallStartTime(new Date());
-      setCurrentScriptIndex(0);
-      setActiveChecklist(checklistItems.map(item => ({ ...item, completed: false })));
-      setCallMetrics({
-        talkRatio: 60,
-        compliance: 95,
-        duration: '00:00'
-      });
-      setIsMuted(false);
-      
-      const gradingService = new GradingService(defaultGradingConfig);
-      await gradingService.initialize();
-      
-      console.log('Starting audio service with config:', apiConfig);
-      const service = await startListening(
-        gradingService,
-        currentScript.content,
-        currentScript.objections
-      );
-      setCurrentAudioService(service);
-      setCurrentPrompt('Call started successfully');
-    } catch (err: any) {
-      console.error('Failed to start call:', err);
-      setCurrentPrompt(err.message || 'Failed to start call. Please check your configuration.');
-      setIsCallActive(false);
-    }
-  };
-
-  const handleEndCall = async () => {
-    setIsCallActive(false);
-    if (currentAudioService) {
-      stopListening(currentAudioService);
-      
-      try {
-        const analysis = await currentAudioService.getCallAnalysis();
-        if (analysis) {
-          const { transcript, analysis: gradeAnalysis } = analysis;
-          
-          const gradingService = new GradingService(defaultGradingConfig);
-          await gradingService.initialize();
-          
-          await gradingService.recordGrade({
-            agentName,
-            timestamp: new Date().toISOString(),
-            callType: currentScript.name,
-            duration: callMetrics.duration,
-            grades: gradeAnalysis.grades,
-            notes: gradeAnalysis.notes,
-            transcription: transcript
-          });
-
-          setCurrentPrompt('Call graded and recorded successfully');
-          setShowGradeModal(true);
-        }
-      } catch (error) {
-        console.error('Failed to analyze call:', error);
-        setCurrentPrompt('Failed to analyze call. Please check your configuration.');
-      }
-    }
-
-    setCallStartTime(null);
-    setCurrentScriptIndex(0);
-    setActiveChecklist(checklistItems.map(item => ({ ...item, completed: false })));
-    setActiveObjection(null);
-    setCallMetrics({
-      talkRatio: 60,
-      compliance: 95,
-      duration: '00:00'
-    });
-    setIsMuted(false);
-    setCurrentAudioService(null);
-  };
-
-  const handleGradeSubmit = async (grades: any) => {
-    try {
-      const gradingService = new GradingService(defaultGradingConfig);
-      await gradingService.initialize();
-      
-      await gradingService.recordGrade({
-        agentName,
-        timestamp: new Date().toISOString(),
-        callType: currentScript.name,
-        duration: callMetrics.duration,
-        grades,
-        notes: grades.notes,
-        transcription: transcript
-      });
-
-      setCurrentPrompt('Grades recorded successfully');
-    } catch (error) {
-      console.error('Failed to record grades:', error);
-      setCurrentPrompt('Failed to record grades. Please check your configuration.');
-    }
   };
 
   const handleScriptSelect = (scriptId: string) => {
@@ -322,9 +307,14 @@ export function App() {
       sttApiKey: '[REDACTED]'
     });
     
-    // Validate JustCall API key format
+    // Validate API keys
     if (!validateJustCallApiKey(apiConfig.dialerApiKey)) {
-      setConfigError('Invalid JustCall API key format. Expected format: key:secret');
+      setConfigError('Invalid JustCall API key format. Expected format: 40-char-hex:40-char-hex');
+      return;
+    }
+
+    if (!validateOpenAIApiKey(apiConfig.sttApiKey)) {
+      setConfigError('Invalid OpenAI API key format. Should start with sk-');
       return;
     }
 
@@ -334,6 +324,28 @@ export function App() {
       setConfigError(null);
     } else {
       setConfigError('Failed to save configuration. Please check the values and try again.');
+    }
+  };
+
+  const handleGradeSubmit = async (grades: any) => {
+    try {
+      const gradingService = new GradingService(defaultGradingConfig);
+      await gradingService.initialize();
+      
+      await gradingService.recordGrade({
+        agentName,
+        timestamp: new Date().toISOString(),
+        callType: currentScript.name,
+        duration: callMetrics.duration,
+        grades,
+        notes: grades.notes,
+        transcription: transcript
+      });
+
+      setCurrentPrompt('Grades recorded successfully');
+    } catch (error) {
+      console.error('Failed to record grades:', error);
+      setCurrentPrompt('Failed to record grades. Please check your configuration.');
     }
   };
 
@@ -358,6 +370,18 @@ export function App() {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
     };
   }, [isDragging, isResizing]);
+
+  useEffect(() => {
+    const script = scripts.find(s => s.id === selectedScriptId);
+    if (script) {
+      setObjections(script.objections);
+    }
+  }, [selectedScriptId, scripts]);
+
+  useEffect(() => {
+    // Log current configuration on mount
+    console.log('Current API Configuration:', apiConfig);
+  }, []);
 
   return (
     <>
@@ -430,16 +454,18 @@ export function App() {
                   className="w-5 h-5 text-white cursor-pointer hover:text-blue-200"
                   onClick={handleEndCall}
                 />
-                {isMuted ? (
-                  <MicOff
-                    className="w-5 h-5 text-red-300 cursor-pointer hover:text-red-200"
-                    onClick={toggleMute}
-                  />
-                ) : (
-                  <Mic
-                    className="w-5 h-5 text-white cursor-pointer hover:text-blue-200"
-                    onClick={toggleMute}
-                  />
+                {!isWaitingForWebhook && (
+                  isMuted ? (
+                    <MicOff
+                      className="w-5 h-5 text-red-300 cursor-pointer hover:text-red-200"
+                      onClick={toggleMute}
+                    />
+                  ) : (
+                    <Mic
+                      className="w-5 h-5 text-white cursor-pointer hover:text-blue-200"
+                      onClick={toggleMute}
+                    />
+                  )
                 )}
               </>
             )}
@@ -470,10 +496,16 @@ export function App() {
                 <Clock className="w-4 h-4 mr-1 text-gray-600" />
                 <span>{callMetrics.duration}</span>
               </div>
-              <div className="flex items-center">
-                <span className="mr-4">Talk Ratio: {callMetrics.talkRatio}%</span>
-                <span>Compliance: {callMetrics.compliance}%</span>
-              </div>
+              {isWaitingForWebhook ? (
+                <div className="text-blue-600 animate-pulse">
+                  Waiting for call connection...
+                </div>
+              ) : (
+                <div className="flex items-center">
+                  <span className="mr-4">Talk Ratio: {callMetrics.talkRatio}%</span>
+                  <span>Compliance: {callMetrics.compliance}%</span>
+                </div>
+              )}
             </div>
 
             <div className="flex border-b">
@@ -569,18 +601,18 @@ export function App() {
                     <div key={category}>
                       <h3 className="font-medium text-gray-900 mb-2">{category}</h3>
                       <div className="space-y-2">
-                        {items.map((objection, index) => (
+                        {Object.entries(items).map(([objection, responses]) => (
                           <button
-                            key={index}
+                            key={objection}
                             onClick={() => setActiveObjection({
                               category,
-                              objection: objection.objection,
-                              responses: objection.responses,
+                              objection,
+                              responses,
                               returnIndex: currentScriptIndex
                             })}
                             className="w-full text-left p-3 rounded bg-gray-50 hover:bg-gray-100"
                           >
-                            {objection.objection}
+                            {objection}
                           </button>
                         ))}
                       </div>
@@ -696,7 +728,7 @@ export function App() {
               <div className="flex justify-end space-x-3 mt-6">
                 <button
                   type="button"
-                  className="px-4 py-2 text-gray-600 hover:text-gray-800"
+                 className="px-4 py-2 text-gray-600 hover:text-gray-800"
                   onClick={() => setShowApiConfig(false)}
                 >
                   Cancel

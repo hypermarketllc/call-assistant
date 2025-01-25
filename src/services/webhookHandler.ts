@@ -23,9 +23,9 @@ export class WebhookHandler {
 
   public handleWebhook(event: JustCallEvent, rawPayload: string, signature?: string) {
     console.log('Received webhook event:', {
-      type: event.event_type,
-      callId: event.call_id,
-      status: event.status
+      type: event.type,
+      callId: event.callId,
+      timestamp: event.timestamp
     });
 
     // Verify webhook signature if provided
@@ -44,7 +44,7 @@ export class WebhookHandler {
     });
 
     // Process the event
-    switch (event.event_type) {
+    switch (event.type) {
       case 'call.initiated':
         this.handleCallStart(event);
         break;
@@ -57,89 +57,68 @@ export class WebhookHandler {
         this.handleCallEnd(event);
         break;
         
-      case 'call.missed':
-        this.handleMissedCall(event);
+      case 'call.incoming':
+        this.handleIncomingCall(event);
         break;
         
-      case 'call.ai_report':
-        this.handleAIReport(event);
-        break;
-        
-      case 'queue.entered':
-      case 'queue.exited':
-        this.handleQueueEvent(event);
+      case 'call.updated':
+        this.handleCallUpdate(event);
         break;
     }
   }
 
   private handleCallStart(event: JustCallEvent) {
-    console.log(`Call initiated: ${event.call_id}`);
+    console.log(`Call initiated: ${event.callId}`);
     
     // Update UI with call status
     this.notifyListeners({
       ...event,
-      status: 'ringing'
+      type: 'call.initiated'
     });
   }
 
   private handleCallAnswer(event: JustCallEvent) {
-    console.log(`Call answered: ${event.call_id}`);
+    console.log(`Call answered: ${event.callId}`);
     
     // Start recording and transcription
     this.notifyListeners({
       ...event,
-      status: 'answered'
+      type: 'call.answered'
     });
   }
 
   private handleCallEnd(event: JustCallEvent) {
-    console.log(`Call completed: ${event.call_id}, Duration: ${event.duration}s`);
+    console.log(`Call completed: ${event.callId}, Duration: ${event.callDuration}`);
     
     // Process recording if available
-    if (event.recording_url) {
-      console.log(`Recording available at: ${event.recording_url}`);
+    if (event.recordingUrl) {
+      console.log(`Recording available at: ${event.recordingUrl}`);
     }
 
     // Update UI with final call status and duration
     this.notifyListeners({
       ...event,
-      status: 'completed'
+      type: 'call.completed'
     });
   }
 
-  private handleMissedCall(event: JustCallEvent) {
-    console.log(`Missed call: ${event.call_id}`);
+  private handleIncomingCall(event: JustCallEvent) {
+    console.log(`Incoming call from ${event.contactNumber}`);
     
-    if (event.voicemail_url) {
-      console.log(`Voicemail available at: ${event.voicemail_url}`);
-    }
-
     this.notifyListeners({
       ...event,
-      status: 'missed'
+      type: 'call.incoming'
     });
   }
 
-  private handleAIReport(event: JustCallEvent) {
-    if (event.ai_report) {
-      console.log('AI Report received:', {
-        summary: event.ai_report.summary,
-        sentiment: event.ai_report.sentiment,
-        actionItems: event.ai_report.action_items,
-        topics: event.ai_report.topics
-      });
-
-      // Update call metrics and analysis in the UI
-      this.notifyListeners(event);
-    }
-  }
-
-  private handleQueueEvent(event: JustCallEvent) {
-    const action = event.event_type === 'queue.entered' ? 'entered' : 'exited';
-    console.log(`Call ${event.call_id} ${action} queue: ${event.queue_name}`);
+  private handleCallUpdate(event: JustCallEvent) {
+    console.log(`Call updated: ${event.callId}`);
     
-    // Update queue status in UI
-    this.notifyListeners(event);
+    // Update call metrics and analysis in the UI
+    this.notifyListeners({
+      ...event,
+      type: 'call.updated'
+    });
   }
 
   private notifyListeners(event: JustCallEvent) {

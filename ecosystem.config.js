@@ -3,7 +3,7 @@ export default {
     {
       name: 'call-assistant-web',
       script: 'npm',
-      args: 'run preview',
+      args: 'run start:web',
       env: {
         NODE_ENV: 'production',
         PORT: '3000'
@@ -11,22 +11,22 @@ export default {
     },
     {
       name: 'call-assistant-proxy',
-      script: './src/server/proxy.js',
+      script: 'src/server/proxy.js',
       interpreter: 'node',
-      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
       env: {
         NODE_ENV: 'production',
-        PORT: '3002'
+        PORT: '3004',
+        PROXY_PORT: '3004'
       }
     },
     {
       name: 'call-assistant-webhook',
-      script: './src/server/webhook.js',
+      script: 'src/server/webhook.js',
       interpreter: 'node',
-      interpreter_args: '--experimental-modules --es-module-specifier-resolution=node',
       env: {
         NODE_ENV: 'production',
-        PORT: '3003'
+        PORT: '3002',
+        WS_PORT: '3003'
       }
     }
   ]

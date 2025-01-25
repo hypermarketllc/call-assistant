@@ -1,37 +1,51 @@
 export type JustCallEventType =
+  | 'call.incoming'
   | 'call.initiated'
   | 'call.answered'
   | 'call.completed'
-  | 'call.missed'
-  | 'call.ai_report'
-  | 'queue.entered'
-  | 'queue.exited';
+  | 'call.updated';
 
-export interface JustCallAIReport {
-  summary: string;
-  sentiment: string;
-  action_items: string[];
-  topics: string[];
-  compliance_score?: number;
-  talk_ratio?: {
-    agent: number;
-    customer: number;
-  };
+export interface JustCallForwardedNumber {
+  number: string;
+  reason: string;
+  reason_code: number;
+}
+
+export interface JustCallIVR {
+  digit: string;
+  digit_description: string;
+}
+
+export interface JustCallMetadata {
+  [key: string]: any;
 }
 
 export interface JustCallEvent {
-  event_type: JustCallEventType;
-  call_id: string;
-  session_id: string;
-  agent_number: string;
-  customer_number: string;
-  direction: 'inbound' | 'outbound';
-  status: 'ringing' | 'answered' | 'completed' | 'missed';
-  duration: number;
-  recording_url?: string;
-  voicemail_url?: string;
-  queue_name?: string;
-  ai_report?: JustCallAIReport;
+  type: JustCallEventType;
+  callId: string;
+  justcallNumber?: string;
+  contactName?: string;
+  contactNumber?: string;
+  contactEmail?: string;
+  isContact?: boolean;
+  agentName?: string;
+  agentId?: number;
+  subject?: string;
+  description?: string;
+  direction?: number;
+  calledVia?: string;
+  recordingUrl?: string;
+  callStatus?: string;
+  callDuration?: string;
+  callDurationSec?: number;
+  forwardedNumber?: JustCallForwardedNumber;
+  recordingMp3?: string;
+  callInfo?: string;
+  ivr?: JustCallIVR;
+  missedCallType?: string;
+  metadata?: JustCallMetadata;
+  rating?: number;
+  notes?: string;
+  dispositionCode?: string;
   timestamp: string;
-  signature?: string;
 }

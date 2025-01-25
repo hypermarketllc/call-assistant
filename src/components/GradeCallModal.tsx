@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 
-interface GradeCallModalProps {
-  isOpen: boolean;
+export interface GradeCallModalProps {
   onClose: () => void;
   onSubmit: (grades: {
     tone: number;
@@ -13,10 +12,15 @@ interface GradeCallModalProps {
     overall: number;
     notes: string;
   }) => void;
-  duration: string;
+  transcript?: string;
+  callMetrics: {
+    talkRatio: number;
+    compliance: number;
+    duration: string;
+  };
 }
 
-export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCallModalProps) {
+export function GradeCallModal({ onClose, onSubmit, transcript, callMetrics }: GradeCallModalProps) {
   const [grades, setGrades] = useState({
     tone: 5,
     onScript: 5,
@@ -26,8 +30,6 @@ export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCal
     overall: 5,
     notes: ''
   });
-
-  if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,8 +79,17 @@ export function GradeCallModal({ isOpen, onClose, onSubmit, duration }: GradeCal
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="mb-6 text-sm text-gray-500">
-            Call Duration: {duration}
+            Call Duration: {callMetrics.duration}
           </div>
+          
+          {transcript && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Call Transcript</h3>
+              <div className="max-h-40 overflow-y-auto p-3 bg-gray-50 rounded text-sm">
+                {transcript}
+              </div>
+            </div>
+          )}
           
           {renderGradeInput('Tone', 'tone')}
           {renderGradeInput('Script Adherence', 'onScript')}
